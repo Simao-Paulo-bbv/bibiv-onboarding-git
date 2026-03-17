@@ -1,0 +1,19 @@
+{
+  "name": "bibiv-onboarding",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "clasp": "clasp",
+    "clasp:login": "clasp login --no-localhost",
+    "clasp:pull": "clasp pull",
+    "clasp:push": "clasp push",
+    "clasp:open": "clasp open"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@google/clasp": "^3.3.0"
+  }
+}
