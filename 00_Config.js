@@ -113,6 +113,11 @@ const CONFIG = {
  */
 const HEADER_ALIASES = {
   "adres": "address",
+  "adres strony internetowej": "website",
+  "czy posiadasz wpis do rejestru rejestru pośredników kredytowych rpk w knf": "posiadam wpis do knf",
+  "numer rpk w knf": "numer wpisu do knf",
+  "numer rachunku firmowego iban": "numer rachunku bankowego",
+  "email służbowy do kontaktu": "email osoby kontaktowej",
 };
 
 /** =========================
