@@ -120,7 +120,9 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
       }
       // ===============================================================
 
-      destRow[dIdx] = v;
+      if (shouldOverwriteImportedValue_(destRow[dIdx], v)) {
+        destRow[dIdx] = v;
+      }
     }
 
     const nipSchemaIdx = mapping.dstIndex["nip"];
@@ -190,4 +192,15 @@ function findDestHeaderByNormalized_(normKey) {
     if (normalizeKey_(DEST_SCHEMA[i]) === nk) return DEST_SCHEMA[i];
   }
   return null;
+}
+
+function shouldOverwriteImportedValue_(currentValue, nextValue) {
+  if (isBlankImportedValue_(currentValue)) return true;
+  return !isBlankImportedValue_(nextValue);
+}
+
+function isBlankImportedValue_(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return value.trim() === "";
+  return false;
 }
