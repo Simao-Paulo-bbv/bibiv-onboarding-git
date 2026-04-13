@@ -118,6 +118,7 @@ const HEADER_ALIASES = {
   "numer rpk w knf": "numer wpisu do knf",
   "numer rachunku firmowego iban": "numer rachunku bankowego",
   "email służbowy do kontaktu": "email osoby kontaktowej",
+  "numer dowodu osobistego beneficjenta": "numer dowodu beneficjenta",
 };
 
 /** =========================
