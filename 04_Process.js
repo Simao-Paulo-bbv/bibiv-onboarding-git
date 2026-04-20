@@ -216,6 +216,25 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         continue;
       }
 
+      const mfReadiness = evaluateMfReadinessForAdd_(payloadMain);
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !mfReadiness.ready) {
+        if (syncIdx != null) {
+          appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_WAITING_MF_DATA ${formatNow_()}`);
+        }
+        log_(runId, "WARN", "APPSHEET_WAITING_MF_DATA", {
+          rowNum,
+          actionToSend,
+          payloadId,
+          payloadNip,
+          missing: mfReadiness.missing.join(","),
+          rowId: id,
+          rowNip: nipRaw
+        });
+        log_(runId, "INFO", "ROW_END", { rowNum });
+        processed++;
+        continue;
+      }
+
       const payloadAccountNumbers = String(payloadMain && payloadMain.accountNumbers ? payloadMain.accountNumbers : "").trim();
       if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !payloadAccountNumbers) {
         if (syncIdx != null) {
@@ -381,4 +400,24 @@ function hasCoreMainPayloadData_(payload) {
     return true;
   }
   return false;
+}
+
+function evaluateMfReadinessForAdd_(payload) {
+  const missing = [];
+  if (!payload) return { ready: false, missing: ["payload"] };
+
+  const requiredCols = ["name_api", "statusVat", "regon", "krs"];
+  for (let i = 0; i < requiredCols.length; i++) {
+    const key = requiredCols[i];
+    const val = String(payload[key] || "").trim();
+    if (!val) missing.push(key);
+  }
+
+  const hasWorkingAddress = String(payload["workingAddress"] || "").trim() !== "";
+  const hasResidenceAddress = String(payload["residenceAddress"] || "").trim() !== "";
+  if (!hasWorkingAddress && !hasResidenceAddress) {
+    missing.push("workingAddress_or_residenceAddress");
+  }
+
+  return { ready: missing.length === 0, missing: missing };
 }
