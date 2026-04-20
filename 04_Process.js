@@ -182,6 +182,32 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         delete payloadMain["Status"];
       }
 
+      // Safety guard:
+      // if payload unexpectedly lost key fields, skip API call instead of sending
+      // an invalid Edit/Add request (e.g. key='' -> AppSheet 404).
+      const payloadId = String(payloadMain && payloadMain.ID ? payloadMain.ID : "").trim();
+      const payloadNip = String(
+        (payloadMain && (payloadMain.NIP_Control || payloadMain.nip)) ? (payloadMain.NIP_Control || payloadMain.nip) : ""
+      ).trim();
+      const hasCorePayloadData = hasCoreMainPayloadData_(payloadMain);
+
+      if (actionToSend && (!payloadId || !payloadNip || !hasCorePayloadData)) {
+        if (syncIdx != null) {
+          appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_SKIP_INVALID_PAYLOAD ${formatNow_()}`);
+        }
+        log_(runId, "WARN", "APPSHEET_SKIP_INVALID_PAYLOAD", {
+          rowNum,
+          actionToSend,
+          payloadId,
+          payloadNip,
+          rowId: id,
+          rowNip: nipRaw
+        });
+        log_(runId, "INFO", "ROW_END", { rowNum });
+        processed++;
+        continue;
+      }
+
       try {
         if (shouldAdd) {
           callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payloadMain, CONFIG.APPSHEET_ACTION_ADD, rowNum);
@@ -314,4 +340,19 @@ function appendSyncMarker_(sheet, rowNum, syncIdx, marker) {
   } catch (e) {
     // ignore
   }
+}
+
+function hasCoreMainPayloadData_(payload) {
+  if (!payload) return false;
+  const keys = ["ID", "NIP_Control", "nip", "submitted on", "nazwa firmy"];
+  for (let i = 0; i < keys.length; i++) {
+    const v = payload[keys[i]];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string") {
+      if (v.trim() !== "") return true;
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
