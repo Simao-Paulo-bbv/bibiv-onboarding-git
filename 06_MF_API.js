@@ -25,7 +25,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     body = res.getContentText() || "";
   } catch (e) {
     log_(runId, "WARN", "MF_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
-    return;
+    return { ok: false, httpCode: 0, rateLimited: false, reason: "FETCH_ERROR" };
   }
 
   if (isVerbose_()) {
@@ -34,13 +34,17 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     log_(runId, "INFO", "MF_RESULT", { rowNum, httpCode });
   }
 
-  if (httpCode !== 200) return;
+  if (httpCode !== 200) {
+    const bodyStr = String(body || "");
+    const rateLimited = httpCode === 429 || bodyStr.indexOf("WL-191") >= 0;
+    return { ok: false, httpCode, rateLimited, reason: rateLimited ? "RATE_LIMIT" : "HTTP_" + String(httpCode) };
+  }
 
   const parsed = safeJsonParse_(body);
   const subj = pickSubjectFromMf_(parsed);
   if (!subj) {
     log_(runId, "WARN", "MF_NO_SUBJECT", { rowNum });
-    return;
+    return { ok: false, httpCode, rateLimited: false, reason: "NO_SUBJECT" };
   }
 
   writeIfColExists_(dest, mapping, rowNum, "name_api", subj.name || "");
@@ -62,6 +66,8 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
 
   const nipControlIdx = mapping.destKey.nipControlIdx;
   if (nipControlIdx != null) dest.getRange(rowNum, nipControlIdx + 1).setValue(nipClean);
+
+  return { ok: true, httpCode, rateLimited: false, reason: "OK" };
 }
 
 function pickSubjectFromMf_(parsed) {

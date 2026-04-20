@@ -69,8 +69,10 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
     }
 
     // MF enrichment (skip if already done unless missing data)
+    let mfCallResult = { ok: false, httpCode: 0, rateLimited: false, reason: "NOT_CALLED" };
     if (CONFIG.FEATURES.MF_ENABLED) {
       const hasMfOk = currentSync.indexOf("MF_OK") >= 0;
+      const hasMfRateLimit = currentSync.indexOf("MF_RATE_LIMIT") >= 0;
 
       const nameApiIdx = mapping.dstIndex["name_api"];
       const statusVatIdx = mapping.dstIndex["statusVat"];
@@ -85,14 +87,21 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
 
       const shouldSkipMf =
         (CONFIG.FEATURES.MF_SKIP_IF_MF_OK && hasMfOk) ||
-        (CONFIG.FEATURES.MF_SKIP_IF_DATA_PRESENT && hasMfData);
+        (CONFIG.FEATURES.MF_SKIP_IF_DATA_PRESENT && hasMfData) ||
+        hasMfRateLimit;
 
       if (shouldSkipMf) {
-        log_(runId, "INFO", "MF_SKIP", { rowNum, hasMfOk, hasMfData });
+        log_(runId, "INFO", "MF_SKIP", { rowNum, hasMfOk, hasMfData, hasMfRateLimit });
       } else {
         const subDate = safeDateForMf_(row[mapping.destKey.submittedIdx]);
-        callMfAndWrite_(runId, dest, mapping, rowNum, nipRaw, subDate);
-        if (syncIdx != null) appendSyncMarker_(dest, rowNum, syncIdx, `MF_OK ${formatNow_()}`);
+        mfCallResult = callMfAndWrite_(runId, dest, mapping, rowNum, nipRaw, subDate) || mfCallResult;
+        if (syncIdx != null) {
+          if (mfCallResult.ok) {
+            appendSyncMarker_(dest, rowNum, syncIdx, `MF_OK ${formatNow_()}`);
+          } else if (mfCallResult.rateLimited) {
+            appendSyncMarker_(dest, rowNum, syncIdx, `MF_RATE_LIMIT ${formatNow_()}`);
+          }
+        }
       }
     }
 
@@ -217,7 +226,8 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       }
 
       const mfReadiness = evaluateMfReadinessForAdd_(payloadMain);
-      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !mfReadiness.ready) {
+      const allowAddWithMfRateLimit = mfCallResult.rateLimited || currentSync.indexOf("MF_RATE_LIMIT") >= 0;
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !mfReadiness.ready && !allowAddWithMfRateLimit) {
         if (syncIdx != null) {
           appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_WAITING_MF_DATA ${formatNow_()}`);
         }
