@@ -34,18 +34,20 @@ const BANK_ACCOUNTS_HEADERS = ["AccountID", "Onboarding_ID", "AccountNumber", "C
 function syncBankAccountsFromMainRow_(runId, destMainSheet, mapping, rowNum, onboardingId) {
   try {
     if (!onboardingId) return;
+    const rawPrimary = getDestCellByColName_(destMainSheet, mapping, rowNum, "accountNumbers");
+    const rawFallback = getDestCellByColName_(destMainSheet, mapping, rowNum, "numer rachunku bankowego");
 
-    const candidates = ["accountNumbers", "numer rachunku bankowego"];
-    const accIdx = findFirstExistingDstIndex_(mapping, candidates);
+    // Priorytet:
+    // 1) accountNumbers (z MF), jeśli niepuste
+    // 2) numer rachunku bankowego (fallback formularzowy)
+    const csvRawPrimary = String(rawPrimary || "").trim();
+    const csvRawFallback = String(rawFallback || "").trim();
+    const csvRaw = csvRawPrimary || csvRawFallback;
 
-    if (accIdx == null) {
-      log_(runId, "WARN", "BANK_ACCOUNTS_COL_MISSING", { rowNum, tried: candidates });
+    if (!hasMappingCol_(mapping, "accountNumbers") && !hasMappingCol_(mapping, "numer rachunku bankowego")) {
+      log_(runId, "WARN", "BANK_ACCOUNTS_COL_MISSING", { rowNum, tried: ["accountNumbers", "numer rachunku bankowego"] });
       return;
     }
-
-    // Czytamy AKTUALNĄ wartość z arkusza (po MF enrichment itd.), żeby nie bazować na starym "row"
-    const raw = destMainSheet.getRange(rowNum, accIdx + 1).getValue();
-    const csvRaw = String(raw || "").trim();
 
     const ss = destMainSheet.getParent();
     const bankSheetName =
@@ -64,13 +66,14 @@ function syncBankAccountsFromMainRow_(runId, destMainSheet, mapping, rowNum, onb
   }
 }
 
-function findFirstExistingDstIndex_(mapping, colNames) {
-  if (!mapping || !mapping.dstIndex) return null;
-  for (let i = 0; i < colNames.length; i++) {
-    const idx = mapping.dstIndex[colNames[i]];
-    if (idx != null) return idx;
-  }
-  return null;
+function hasMappingCol_(mapping, colName) {
+  return !!(mapping && mapping.dstIndex && mapping.dstIndex[colName] != null);
+}
+
+function getDestCellByColName_(destMainSheet, mapping, rowNum, colName) {
+  if (!hasMappingCol_(mapping, colName)) return "";
+  const idx = mapping.dstIndex[colName];
+  return destMainSheet.getRange(rowNum, idx + 1).getValue();
 }
 
 function parseAccountCsv_(csvRaw) {

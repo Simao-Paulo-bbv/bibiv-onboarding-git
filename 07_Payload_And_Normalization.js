@@ -25,6 +25,13 @@ function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
     payload["numer telefonu osoby kontaktowej"] = phone ? Number(phone) : "";
   }
 
+  // AppSheet MAIN requires accountNumbers (EnumList).
+  // When MF is temporarily unavailable (e.g. 429), fallback to form field.
+  payload["accountNumbers"] = normalizeAccountNumbersForPayload_(
+    payload["accountNumbers"],
+    payload["numer rachunku bankowego"]
+  );
+
 
   // Url columns (AppSheet "Url" type):
   // - For EDIT: if empty/placeholder -> omit so we don't overwrite existing value.
@@ -149,6 +156,32 @@ function normalizeRegon_(v) {
   if (digits.length <= 9) return digits.padStart(9, "0");
   if (digits.length <= 14) return digits.padStart(14, "0");
   return digits;
+}
+
+function normalizeAccountNumbersForPayload_(primaryValue, fallbackValue) {
+  const normalizedPrimary = normalizeAccountNumbersCsv_(primaryValue);
+  if (normalizedPrimary) return normalizedPrimary;
+  return normalizeAccountNumbersCsv_(fallbackValue);
+}
+
+function normalizeAccountNumbersCsv_(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  if (!raw) return "";
+
+  const parts = raw
+    .split(",")
+    .map((s) => String(s || "").replace(/\s+/g, "").trim())
+    .filter(Boolean);
+
+  const seen = {};
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    const v = parts[i];
+    if (seen[v]) continue;
+    seen[v] = true;
+    out.push(v);
+  }
+  return out.join(",");
 }
 
 function dropOptionalEmptyPayloadFields_(payload) {

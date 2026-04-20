@@ -216,6 +216,24 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         continue;
       }
 
+      const payloadAccountNumbers = String(payloadMain && payloadMain.accountNumbers ? payloadMain.accountNumbers : "").trim();
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !payloadAccountNumbers) {
+        if (syncIdx != null) {
+          appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_SKIP_MISSING_ACCOUNTNUMBERS ${formatNow_()}`);
+        }
+        log_(runId, "WARN", "APPSHEET_SKIP_MISSING_ACCOUNTNUMBERS", {
+          rowNum,
+          actionToSend,
+          payloadId,
+          payloadNip,
+          rowId: id,
+          rowNip: nipRaw
+        });
+        log_(runId, "INFO", "ROW_END", { rowNum });
+        processed++;
+        continue;
+      }
+
       try {
         if (shouldAdd) {
           callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payloadMain, CONFIG.APPSHEET_ACTION_ADD, rowNum);
