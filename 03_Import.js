@@ -93,6 +93,9 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
   const destEndRow = destStartRow + candidates.length - 1;
 
   const out = [];
+  const preferredRpkIdx = findSourceHeaderRawIndex_(mapping.sourceHeaders, "numer rpk");
+  const legacyRpkIdx = findSourceHeaderRawIndex_(mapping.sourceHeaders, "numer rpk w knf");
+
   for (let i = 0; i < candidates.length; i++) {
     const srcRow = candidates[i].values;
     const destRow = new Array(DEST_SCHEMA.length).fill("");
@@ -111,6 +114,18 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
 
       const dIdx = mapping.dstIndex[destHeader];
       if (dIdx == null || dIdx >= DEST_SCHEMA.length) continue;
+
+      // Priority rule for renamed RPK field:
+      // when both columns exist, prefer "numer rpk" over legacy "numer rpk w knf".
+      if (
+        destHeader === "numer wpisu do knf" &&
+        preferredRpkIdx != null &&
+        legacyRpkIdx != null &&
+        s === legacyRpkIdx &&
+        !isBlankImportedValue_(srcRow[preferredRpkIdx])
+      ) {
+        continue;
+      }
 
       // === FIX: opcjonalna data z Squarespace może przyjść jako "//" ===
       // Kolumna "data urodzenia 6" jest nieobowiązkowa; AppSheet wywala błąd na "//".
@@ -203,4 +218,14 @@ function isBlankImportedValue_(value) {
   if (value === null || value === undefined) return true;
   if (typeof value === "string") return value.trim() === "";
   return false;
+}
+
+function findSourceHeaderRawIndex_(headers, rawName) {
+  const target = String(rawName || "").trim().toLowerCase();
+  if (!target) return null;
+  for (let i = 0; i < (headers || []).length; i++) {
+    const raw = String(headers[i] || "").trim().toLowerCase();
+    if (raw === target) return i;
+  }
+  return null;
 }
