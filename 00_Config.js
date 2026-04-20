@@ -50,10 +50,10 @@ const CONFIG = {
   SOURCE_MARK_PREFIX_DONE: "DONE",
 
   // Dedupe strategy.
-  // Problem: "submitted on" może mieć różny format (string / Date / ISO), co rozjeżdża klucz deduplikacji.
-  // W praktyce NIP jest wystarczająco stabilnym kluczem dla importu z formularza.
+  // For forms where the same company (same NIP) may submit multiple onboarding entries,
+  // dedupe should include submission timestamp.
   DEDUPE: {
-    MODE: "NIP_ONLY", // "NIP_ONLY" | "NIP_AND_SUBMITTED"
+    MODE: "NIP_AND_SUBMITTED", // "NIP_ONLY" | "NIP_AND_SUBMITTED"
   },
 
   DEST_SYNC_STATUS_COL: "sync_status",
