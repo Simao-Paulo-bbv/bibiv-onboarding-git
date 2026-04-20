@@ -111,10 +111,18 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
     // Build main payload (after MF)
 
     // Decide action early (needed for payload normalization e.g. optional Url on Add vs Edit)
+    const contactFullNameIdx = mapping.dstIndex["imię i nazwisko osoby kontaktowej"];
+    const managerFullNameIdx = mapping.dstIndex["imię i nazwisko kierownika"];
+    const beneficialFullNameIdx = mapping.dstIndex["imię i nazwisko beneficjenta"];
+
+    const hasContactFullName = contactFullNameIdx != null && String(row[contactFullNameIdx] || "").trim();
+    const hasManagerFullName = managerFullNameIdx != null && String(row[managerFullNameIdx] || "").trim();
+    const hasBeneficialFullName = beneficialFullNameIdx != null && String(row[beneficialFullNameIdx] || "").trim();
+
     const needRefs =
-      (contactPersonIdx != null && !String(dest.getRange(rowNum, contactPersonIdx + 1).getValue() || "").trim()) ||
-      (managerPersonIdx != null && !String(dest.getRange(rowNum, managerPersonIdx + 1).getValue() || "").trim()) ||
-      (beneficialPersonIdx != null && !String(dest.getRange(rowNum, beneficialPersonIdx + 1).getValue() || "").trim());
+      (contactPersonIdx != null && hasContactFullName && !String(dest.getRange(rowNum, contactPersonIdx + 1).getValue() || "").trim()) ||
+      (managerPersonIdx != null && hasManagerFullName && !String(dest.getRange(rowNum, managerPersonIdx + 1).getValue() || "").trim()) ||
+      (beneficialPersonIdx != null && hasBeneficialFullName && !String(dest.getRange(rowNum, beneficialPersonIdx + 1).getValue() || "").trim());
 
     // Sending rules:
 // - ADD: only when row is truly new: Status is blank/empty OR already equals STATUS_TO_SEND (Init),
