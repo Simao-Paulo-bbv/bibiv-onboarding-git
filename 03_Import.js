@@ -59,7 +59,7 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
         const markVal = String(row[markIdx] || "").trim();
         if (markVal) {
           const markedDestRow = parseMarkedDestRow_(markVal);
-          if (markedDestRow != null && !destRowMatchesKey_(dest, mapping, markedDestRow, key)) {
+          if (markedDestRow != null && !destRowMatchesSource_(dest, mapping, markedDestRow, row)) {
             allowRestoreImport = true;
             reasons.markedButMissingInDest = (reasons.markedButMissingInDest || 0) + 1;
           }
@@ -244,18 +244,35 @@ function parseMarkedDestRow_(markVal) {
   return Number.isFinite(n) && n >= 2 ? n : null;
 }
 
-function destRowMatchesKey_(dest, mapping, rowNum, expectedKey) {
-  if (!dest || !mapping || !expectedKey) return false;
+function destRowMatchesSource_(dest, mapping, rowNum, sourceRowValues) {
+  if (!dest || !mapping || !sourceRowValues) return false;
   if (!rowNum || rowNum < 2 || rowNum > dest.getLastRow()) return false;
 
   const nipIdx = mapping.destKey.nipControlIdx != null ? mapping.destKey.nipControlIdx : mapping.destKey.nipIdx;
   const subIdx = mapping.destKey.submittedIdx;
-  if (nipIdx == null || subIdx == null) return false;
+  const srcNipIdx = mapping.sourceKey.nipIdx;
+  const srcSubIdx = mapping.sourceKey.dateIdx;
+  const srcNameIdx = mapping.srcIndex[normalizeKey_("Nazwa firmy")];
+  const dstNameIdx = mapping.dstIndex["nazwa firmy"];
 
-  const row = dest.getRange(rowNum, 1, 1, DEST_SCHEMA.length).getValues()[0];
-  const nip = String(row[nipIdx] || "").trim();
-  const sub = row[subIdx];
-  if (!nip) return false;
+  if (nipIdx == null || subIdx == null || srcNipIdx == null || srcSubIdx == null) return false;
 
-  return makeDedupeKey_(nip, sub) === expectedKey;
+  const destRow = dest.getRange(rowNum, 1, 1, DEST_SCHEMA.length).getValues()[0];
+  const destNip = String(destRow[nipIdx] || "").trim();
+  const destSub = destRow[subIdx];
+  if (!destNip) return false;
+
+  const srcNip = String(sourceRowValues[srcNipIdx] || "").trim();
+  const srcSub = sourceRowValues[srcSubIdx];
+  const sameKey = makeDedupeKey_(destNip, destSub) === makeDedupeKey_(srcNip, srcSub);
+  if (!sameKey) return false;
+
+  // Strengthen check with company name to avoid false match when key collides.
+  if (srcNameIdx != null && dstNameIdx != null) {
+    const srcName = String(sourceRowValues[srcNameIdx] || "").trim().toLowerCase();
+    const dstName = String(destRow[dstNameIdx] || "").trim().toLowerCase();
+    if (srcName !== dstName) return false;
+  }
+
+  return true;
 }
