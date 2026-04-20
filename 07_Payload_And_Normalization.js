@@ -43,6 +43,10 @@ function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
     }
   }
 
+  // Some form fields may temporarily disappear in Squarespace.
+  // Keep them in flow when present, but avoid sending empty placeholders to AppSheet.
+  dropOptionalEmptyPayloadFields_(payload);
+
   delete payload["_RowNumber"];
   return payload;
 }
@@ -145,4 +149,24 @@ function normalizeRegon_(v) {
   if (digits.length <= 9) return digits.padStart(9, "0");
   if (digits.length <= 14) return digits.padStart(14, "0");
   return digits;
+}
+
+function dropOptionalEmptyPayloadFields_(payload) {
+  const optionalCols = {
+    "pesel przedstawiciela handlowego": true,
+    "numer dowodu beneficjenta": true,
+    "pesel osoby kontaktowej": true
+  };
+
+  for (const col in optionalCols) {
+    if (!Object.prototype.hasOwnProperty.call(payload, col)) continue;
+    if (isBlankOptionalPayloadValue_(payload[col])) delete payload[col];
+  }
+}
+
+function isBlankOptionalPayloadValue_(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value !== "string") return false;
+  const s = value.trim();
+  return s === "" || s === "-" || s === "//";
 }
