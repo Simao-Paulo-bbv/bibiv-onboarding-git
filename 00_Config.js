@@ -64,6 +64,11 @@ const CONFIG = {
 
   MF_API_URL: "https://wl-api.mf.gov.pl/api/search/nip/{nip}?date={date}",
   MF_TIMEOUT_MS: 15000,
+  // Optional relay (recommended when MF rate-limit WL-191/429 blocks direct calls).
+  // If MF_RELAY_URL is set, script calls relay instead of MF directly.
+  MF_RELAY_URL: "",
+  MF_RELAY_AUTH_TOKEN: "",
+  MF_RELAY_TIMEOUT_MS: 20000,
 
   APPSHEET_APP_ID: "ebb1aa13-9408-4a7d-8d41-8cb03b9e766f",
   APPSHEET_TABLE_MAIN: "BIBIV_onboarding_APP",

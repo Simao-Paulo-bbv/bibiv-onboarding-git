@@ -1,0 +1,7 @@
+node_modules/**
+mf-relay/**
+.git/**
+.gitignore
+.claspignore
+package.json
+package-lock.json

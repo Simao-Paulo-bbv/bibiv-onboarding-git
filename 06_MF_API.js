@@ -3,9 +3,13 @@
  *  ========================= */
 function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   const nipClean = String(nip || "").trim();
-  const url = CONFIG.MF_API_URL
-    .replace("{nip}", encodeURIComponent(nipClean))
-    .replace("{date}", encodeURIComponent(dateStr));
+  const relayUrl = String((CONFIG && CONFIG.MF_RELAY_URL) || "").trim();
+  const useRelay = relayUrl !== "";
+  const url = useRelay
+    ? relayUrl
+    : CONFIG.MF_API_URL
+        .replace("{nip}", encodeURIComponent(nipClean))
+        .replace("{date}", encodeURIComponent(dateStr));
 
   log_(runId, "INFO", "MF_CALL", { rowNum });
 
@@ -13,14 +17,16 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   let body = "";
 
   try {
-    const res = UrlFetchApp.fetch(url, {
-      method: "get",
-      muteHttpExceptions: true,
-      followRedirects: true,
-      contentType: "application/json",
-      validateHttpsCertificates: true,
-      timeout: CONFIG.MF_TIMEOUT_MS
-    });
+    const res = useRelay
+      ? fetchViaMfRelay_(url, nipClean, dateStr)
+      : UrlFetchApp.fetch(url, {
+          method: "get",
+          muteHttpExceptions: true,
+          followRedirects: true,
+          contentType: "application/json",
+          validateHttpsCertificates: true,
+          timeout: CONFIG.MF_TIMEOUT_MS
+        });
     httpCode = res.getResponseCode();
     body = res.getContentText() || "";
   } catch (e) {
@@ -95,4 +101,21 @@ function safeDateForMf_(submittedOn) {
     }
   }
   return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+
+function fetchViaMfRelay_(relayUrl, nip, dateStr) {
+  const headers = { "Content-Type": "application/json" };
+  const token = String((CONFIG && CONFIG.MF_RELAY_AUTH_TOKEN) || "").trim();
+  if (token) headers["Authorization"] = "Bearer " + token;
+
+  return UrlFetchApp.fetch(relayUrl, {
+    method: "post",
+    muteHttpExceptions: true,
+    followRedirects: true,
+    contentType: "application/json",
+    validateHttpsCertificates: true,
+    timeout: (CONFIG && CONFIG.MF_RELAY_TIMEOUT_MS) || 20000,
+    headers: headers,
+    payload: JSON.stringify({ nip: String(nip || ""), date: String(dateStr || "") })
+  });
 }
