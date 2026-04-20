@@ -51,21 +51,26 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
     const key = makeDedupeKey_(nip, sub);
 
     if (!forceMode) {
-      // 1) Jeśli DEST już ma ten rekord -> pomiń (to jest prawdziwa deduplikacja).
-      if (dedupe[key]) { reasons.deduped++; continue; }
+      let allowRestoreImport = false;
 
-      // 2) Jeśli w tym samym przebiegu już przyjęliśmy ten rekord -> pomiń.
-      if (seenKeysInRun[key]) { reasons.duplicateInRun = (reasons.duplicateInRun || 0) + 1; continue; }
-      seenKeysInRun[key] = true;
-
-      // 3) Jeśli SOURCE ma znacznik importu, ale DEST nie ma rekordu (np. ktoś usunął wiersz w DEST),
-      //    to pozwól na ponowny import – to dokładnie naprawia Twój przypadek.
-      if (markIdx != null && markIdx >= 0) {
+      // 1) Jeśli SOURCE ma marker IN_DEST/DONE z DEST_ROW, ale ten wiersz w DEST już nie istnieje
+      //    albo nie odpowiada temu samemu kluczowi, pozwól na odtworzenie importu.
+      if (markIdx != null && markIdx >= 0 && !destIsEmpty) {
         const markVal = String(row[markIdx] || "").trim();
-        if (markVal && !destIsEmpty) {
-          reasons.markedButMissingInDest = (reasons.markedButMissingInDest || 0) + 1;
-          // nie continue; -> odtwarzamy brakujący rekord
+        if (markVal) {
+          const markedDestRow = parseMarkedDestRow_(markVal);
+          if (markedDestRow != null && !destRowMatchesKey_(dest, mapping, markedDestRow, key)) {
+            allowRestoreImport = true;
+            reasons.markedButMissingInDest = (reasons.markedButMissingInDest || 0) + 1;
+          }
         }
+      }
+
+      // 2) Standardowa deduplikacja tylko gdy NIE odtwarzamy brakującego rekordu.
+      if (!allowRestoreImport) {
+        if (dedupe[key]) { reasons.deduped++; continue; }
+        if (seenKeysInRun[key]) { reasons.duplicateInRun = (reasons.duplicateInRun || 0) + 1; continue; }
+        seenKeysInRun[key] = true;
       }
     }
 
@@ -228,4 +233,29 @@ function findSourceHeaderRawIndex_(headers, rawName) {
     if (raw === target) return i;
   }
   return null;
+}
+
+function parseMarkedDestRow_(markVal) {
+  const s = String(markVal || "").trim();
+  if (!s) return null;
+  const m = s.match(/DEST_ROW\s+(\d+)/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n >= 2 ? n : null;
+}
+
+function destRowMatchesKey_(dest, mapping, rowNum, expectedKey) {
+  if (!dest || !mapping || !expectedKey) return false;
+  if (!rowNum || rowNum < 2 || rowNum > dest.getLastRow()) return false;
+
+  const nipIdx = mapping.destKey.nipControlIdx != null ? mapping.destKey.nipControlIdx : mapping.destKey.nipIdx;
+  const subIdx = mapping.destKey.submittedIdx;
+  if (nipIdx == null || subIdx == null) return false;
+
+  const row = dest.getRange(rowNum, 1, 1, DEST_SCHEMA.length).getValues()[0];
+  const nip = String(row[nipIdx] || "").trim();
+  const sub = row[subIdx];
+  if (!nip) return false;
+
+  return makeDedupeKey_(nip, sub) === expectedKey;
 }
