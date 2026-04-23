@@ -48,6 +48,9 @@ const CONFIG = {
   // - DONE ...      => pełny proces zakończony (MF + AppSheet), wiersz nie jest ponownie przetwarzany
   SOURCE_MARK_PREFIX_IMPORT: "IN_DEST",
   SOURCE_MARK_PREFIX_DONE: "DONE",
+  // Safety mode (default): never re-import rows that were already marked IN_DEST/DONE.
+  // Set true only for controlled recovery runs.
+  SOURCE_REIMPORT_IF_MISSING_IN_DEST: false,
 
   // Dedupe strategy.
   // For forms where the same company (same NIP) may submit multiple onboarding entries,

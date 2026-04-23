@@ -47,6 +47,20 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
 
     if (!nip) { reasons.noNip++; continue; }
 
+    // Default safety: once SOURCE row is marked IN_DEST/DONE, do not import again.
+    // This prevents historical rows from being re-added after schema/config changes.
+    if (!forceMode && markIdx != null && markIdx >= 0) {
+      const markVal = String(row[markIdx] || "").trim();
+      if (markVal) {
+        const isImportMarked = markVal.indexOf(CONFIG.SOURCE_MARK_PREFIX_IMPORT) === 0;
+        const isDoneMarked = markVal.indexOf(CONFIG.SOURCE_MARK_PREFIX_DONE) === 0;
+        if ((isImportMarked || isDoneMarked) && CONFIG.SOURCE_REIMPORT_IF_MISSING_IN_DEST !== true) {
+          reasons.alreadyMarkedImported++;
+          continue;
+        }
+      }
+    }
+
     // Klucz deduplikacji (DEST / wiersze usunięte / odtworzenie braków)
     const key = makeDedupeKey_(nip, sub);
 
@@ -55,7 +69,7 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
 
       // 1) Jeśli SOURCE ma marker IN_DEST/DONE z DEST_ROW, ale ten wiersz w DEST już nie istnieje
       //    albo nie odpowiada temu samemu kluczowi, pozwól na odtworzenie importu.
-      if (markIdx != null && markIdx >= 0 && !destIsEmpty) {
+      if (CONFIG.SOURCE_REIMPORT_IF_MISSING_IN_DEST === true && markIdx != null && markIdx >= 0 && !destIsEmpty) {
         const markVal = String(row[markIdx] || "").trim();
         if (markVal) {
           const markedDestRow = parseMarkedDestRow_(markVal);
