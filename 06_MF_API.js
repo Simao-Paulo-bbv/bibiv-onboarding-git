@@ -55,6 +55,47 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     }
   }
 
+  let subj = null;
+  if (vatHttpCode === 200) subj = pickSubjectFromMf_(vatParsed);
+
+  // Retry strategy for GOV VAT when subject is null:
+  // 1) retry with today's date
+  // 2) retry without date param
+  if (vatHttpCode === 200 && !subj && hasGovConfig) {
+    const submittedDate = String(dateStr || "").trim();
+    const todayDate = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+
+    if (submittedDate && submittedDate !== todayDate) {
+      try {
+        const retryToday = fetchGovApiGet_(CONFIG.GOV_VAT_PATH, { nip: nipClean, date: todayDate });
+        log_(runId, "INFO", "MF_RETRY_TODAY", { rowNum, httpCode: retryToday.httpCode, date: todayDate });
+        if (retryToday.httpCode === 200) {
+          vatHttpCode = retryToday.httpCode;
+          vatBody = retryToday.body;
+          vatParsed = retryToday.parsed;
+          subj = pickSubjectFromMf_(vatParsed);
+        }
+      } catch (e) {
+        log_(runId, "WARN", "MF_RETRY_TODAY_FAIL", { rowNum, err: String(e).slice(0, 300) });
+      }
+    }
+
+    if (!subj) {
+      try {
+        const retryNoDate = fetchGovApiGet_(CONFIG.GOV_VAT_PATH, { nip: nipClean });
+        log_(runId, "INFO", "MF_RETRY_NODATE", { rowNum, httpCode: retryNoDate.httpCode });
+        if (retryNoDate.httpCode === 200) {
+          vatHttpCode = retryNoDate.httpCode;
+          vatBody = retryNoDate.body;
+          vatParsed = retryNoDate.parsed;
+          subj = pickSubjectFromMf_(vatParsed);
+        }
+      } catch (e) {
+        log_(runId, "WARN", "MF_RETRY_NODATE_FAIL", { rowNum, err: String(e).slice(0, 300) });
+      }
+    }
+  }
+
   if (isVerbose_()) {
     log_(runId, "INFO", "MF_RESULT", { rowNum, httpCode: vatHttpCode, bodySnippet: String(vatBody || "").slice(0, 700) });
   } else {
@@ -67,40 +108,44 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     return { ok: false, httpCode: vatHttpCode, rateLimited, reason: rateLimited ? "RATE_LIMIT" : "HTTP_" + String(vatHttpCode) };
   }
 
-  const subj = pickSubjectFromMf_(vatParsed);
-  if (!subj) {
+  let acc = [];
+  if (subj) {
+    writeIfColExists_(dest, mapping, rowNum, "statusVat", subj.statusVat || "");
+    writeIfColExists_(dest, mapping, rowNum, "regon", String(subj.regon || ""));
+    writeIfColExists_(dest, mapping, rowNum, "krs", String(subj.krs || ""));
+    writeIfColExists_(dest, mapping, rowNum, "registrationLegalDate", subj.registrationLegalDate || "");
+    writeIfColExists_(dest, mapping, rowNum, "workingAddress", subj.workingAddress || "");
+    writeIfColExists_(dest, mapping, rowNum, "residenceAddress", subj.residenceAddress || "");
+
+    acc = Array.isArray(subj.accountNumbers)
+      ? subj.accountNumbers.filter(Boolean).map(String)
+      : (subj.accountNumbers ? [String(subj.accountNumbers)] : []);
+    writeIfColExists_(dest, mapping, rowNum, "accountNumbers", acc.join(","));
+  } else {
     log_(runId, "WARN", "MF_NO_SUBJECT", { rowNum });
-    return { ok: false, httpCode: vatHttpCode, rateLimited: false, reason: "NO_SUBJECT" };
   }
 
-  writeIfColExists_(dest, mapping, rowNum, "statusVat", subj.statusVat || "");
-  writeIfColExists_(dest, mapping, rowNum, "regon", String(subj.regon || ""));
-  writeIfColExists_(dest, mapping, rowNum, "krs", String(subj.krs || ""));
-  writeIfColExists_(dest, mapping, rowNum, "registrationLegalDate", subj.registrationLegalDate || "");
-  writeIfColExists_(dest, mapping, rowNum, "workingAddress", subj.workingAddress || "");
-  writeIfColExists_(dest, mapping, rowNum, "residenceAddress", subj.residenceAddress || "");
-
-  const acc = Array.isArray(subj.accountNumbers)
-    ? subj.accountNumbers.filter(Boolean).map(String)
-    : (subj.accountNumbers ? [String(subj.accountNumbers)] : []);
-  writeIfColExists_(dest, mapping, rowNum, "accountNumbers", acc.join(","));
-
   // --- 2) REGON (name_api <- Nazwa) ---
+  let nameFromRegon = "";
+  let regonFromRegon = "";
   if (hasGovConfig) {
     try {
       const regonRes = fetchGovApiGet_(CONFIG.GOV_REGON_PATH, { nip: nipClean });
       if (regonRes.httpCode === 200) {
-        const nameFromRegon = pickNameFromRegon_(regonRes.parsed, nipClean);
-        if (nameFromRegon) writeIfColExists_(dest, mapping, rowNum, "name_api", nameFromRegon);
+        nameFromRegon = pickNameFromRegon_(regonRes.parsed, nipClean);
+        regonFromRegon = pickRegonFromRegon_(regonRes.parsed, nipClean);
       } else {
         log_(runId, "WARN", "GOV_REGON_HTTP", { rowNum, httpCode: regonRes.httpCode });
       }
     } catch (e) {
       log_(runId, "WARN", "GOV_REGON_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
     }
-  } else {
-    // Legacy compatibility: fallback to subject.name from MF response.
-    writeIfColExists_(dest, mapping, rowNum, "name_api", subj.name || "");
+  }
+
+  if (nameFromRegon) writeIfColExists_(dest, mapping, rowNum, "name_api", nameFromRegon);
+  else if (subj) writeIfColExists_(dest, mapping, rowNum, "name_api", subj.name || "");
+  if (regonFromRegon && (!subj || !String(subj.regon || "").trim())) {
+    writeIfColExists_(dest, mapping, rowNum, "regon", String(regonFromRegon || ""));
   }
 
   // --- 3) IBAN metadata ---
@@ -129,7 +174,9 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   const nipControlIdx = mapping.destKey.nipControlIdx;
   if (nipControlIdx != null) dest.getRange(rowNum, nipControlIdx + 1).setValue(nipClean);
 
-  return { ok: true, httpCode: vatHttpCode, rateLimited: false, reason: "OK" };
+  return subj
+    ? { ok: true, httpCode: vatHttpCode, rateLimited: false, reason: "OK" }
+    : { ok: false, httpCode: vatHttpCode, rateLimited: false, reason: "NO_SUBJECT" };
 }
 
 function pickSubjectFromMf_(parsed) {
@@ -207,6 +254,39 @@ function pickNameFromRegon_(parsed, nipClean) {
     }
 
     return best ? best.name : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function pickRegonFromRegon_(parsed, nipClean) {
+  try {
+    const rows =
+      (parsed && parsed.results) ||
+      (parsed && parsed.data && parsed.data.results) ||
+      (parsed && parsed.data && Array.isArray(parsed.data) ? parsed.data : null) ||
+      [];
+    if (!rows || !rows.length) return "";
+
+    const targetNip = String(nipClean || "").trim();
+    let best = null;
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i] || {};
+      const reg = String(r.Regon || r.regon || "").trim();
+      if (!reg) continue;
+
+      const rNip = String(r.Nip || r.nip || "").trim();
+      const typ = String(r.Typ || r.typ || "").trim().toUpperCase();
+      const score =
+        (rNip && targetNip && rNip === targetNip ? 100 : 0) +
+        (typ === "P" ? 10 : 0) +
+        (typ === "LP" ? 5 : 0);
+
+      if (!best || score > best.score) best = { score: score, regon: reg };
+    }
+
+    return best ? best.regon : "";
   } catch (e) {
     return "";
   }

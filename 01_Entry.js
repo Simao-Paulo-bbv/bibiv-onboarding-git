@@ -78,16 +78,12 @@ function runSyncAndProcess() {
       );
     } else if (hasDestData) {
       log_(runId, "INFO", "NO_NEW_IMPORTS_PROCESS_PENDING", { destLastRow });
-      processed = processDestRows_(
+      processed = processPendingDestRows_(
         runId,
         mapping,
         source,
         dest,
-        2,
-        destLastRow,
-        startedAt,
-        [], // no new rowMap
-        markIdx
+        startedAt
       );
     } else {
       log_(runId, "INFO", "NO_NEW_ROWS_TO_PROCESS");
@@ -203,9 +199,6 @@ if (scanRowStart !== 2) {
     if (!nip) continue;
 
     const hasMainOk = sync.indexOf(CONFIG.MARKERS.MAIN_OK) >= 0;
-    const hasPeopleRefsOk = sync.indexOf("PEOPLE_REFS_OK") >= 0;
-    const hasMfOk = sync.indexOf("MF_OK") >= 0;
-
     // braki refów
     const cref = String(getVal("CREF") || "").trim();
     const mref = String(getVal("MREF") || "").trim();
@@ -216,16 +209,12 @@ if (scanRowStart !== 2) {
       (mIdx != null && !mref) ||
       (bIdx != null && !bref);
 
-    // pending, jeśli:
-    // - brak ID (nigdy nie dokończył startu)
-    // - albo brak MF_OK
-    // - albo brak PEOPLE_REFS_OK
-    // - albo brak APPSHEET_OK
-    // - albo brak refów, mimo że main już poszedł (wtedy robimy Edit)
+    // Pending only when MAIN is not yet confirmed in AppSheet
+    // or when MAIN exists but refs are still missing (Edit backfill).
+    // Do not depend on MF_OK/PEOPLE markers here — they are auxiliary and
+    // may be absent on historical rows, which caused starvation of true pending rows.
     const isPending =
       !id ||
-      !hasMfOk ||
-      !hasPeopleRefsOk ||
       !hasMainOk ||
       (hasMainOk && needsRefs);
 
