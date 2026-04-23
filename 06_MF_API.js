@@ -172,25 +172,32 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   }
 
   // --- 3) IBAN metadata ---
-  // Hotfix-safe mapping: write only to existing column "kod swift banku".
-  // Additional columns (swift/bic, Bank name/address/city) require AppSheet schema migration first.
+  // Use source/main bank account column directly ("numer rachunku bankowego"), country fixed to PL.
   if (hasGovConfig) {
-    const firstAccount = pickFirstAccountNumber_(acc);
-    if (firstAccount) {
+    const mainAccount = getMainBankAccountForIban_(dest, mapping, rowNum);
+    if (mainAccount) {
       try {
         const ibanRes = fetchGovApiGet_(CONFIG.GOV_IBAN_PATH, {
           country_code: "PL",
-          account_number: firstAccount
+          account_number: mainAccount
         });
         if (ibanRes.httpCode === 200) {
           const bankMeta = pickBankMetaFromIban_(ibanRes.parsed);
+          // Keep legacy field for backward compatibility.
           writeIfColExists_(dest, mapping, rowNum, "kod swift banku", bankMeta.bic || "");
+          // New bank metadata fields.
+          writeIfColExists_(dest, mapping, rowNum, "swift/bic", bankMeta.bic || "");
+          writeIfColExists_(dest, mapping, rowNum, "Bank name", bankMeta.bankName || "");
+          writeIfColExists_(dest, mapping, rowNum, "Bank address", bankMeta.address || "");
+          writeIfColExists_(dest, mapping, rowNum, "Bank city", bankMeta.city || "");
         } else {
           log_(runId, "WARN", "GOV_IBAN_HTTP", { rowNum, httpCode: ibanRes.httpCode });
         }
       } catch (e) {
         log_(runId, "WARN", "GOV_IBAN_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
       }
+    } else {
+      log_(runId, "INFO", "GOV_IBAN_SKIP_NO_MAIN_ACCOUNT", { rowNum });
     }
   }
 
@@ -322,6 +329,26 @@ function pickFirstAccountNumber_(accounts) {
     if (normalized) return normalized;
   }
   return "";
+}
+
+function getMainBankAccountForIban_(dest, mapping, rowNum) {
+  try {
+    const idx = mapping && mapping.dstIndex ? mapping.dstIndex["numer rachunku bankowego"] : null;
+    if (idx == null) return "";
+    const raw = dest.getRange(rowNum, idx + 1).getValue();
+    const normalized = normalizeBankAccountForIban_(raw);
+    return normalized;
+  } catch (e) {
+    return "";
+  }
+}
+
+function normalizeBankAccountForIban_(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  if (!raw) return "";
+  // remove spaces, dashes and optional country prefix (e.g. PL)
+  const compact = raw.replace(/[\s\-–—]+/g, "");
+  return compact.replace(/^[A-Za-z]{2}/, "");
 }
 
 function pickBankMetaFromIban_(parsed) {
