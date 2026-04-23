@@ -103,7 +103,9 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     writeIfColExists_(dest, mapping, rowNum, "name_api", subj.name || "");
   }
 
-  // --- 3) IBAN metadata (swift/bic, Bank name/address/city) ---
+  // --- 3) IBAN metadata ---
+  // Hotfix-safe mapping: write only to existing column "kod swift banku".
+  // Additional columns (swift/bic, Bank name/address/city) require AppSheet schema migration first.
   if (hasGovConfig) {
     const firstAccount = pickFirstAccountNumber_(acc);
     if (firstAccount) {
@@ -114,10 +116,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
         });
         if (ibanRes.httpCode === 200) {
           const bankMeta = pickBankMetaFromIban_(ibanRes.parsed);
-          writeIfColExists_(dest, mapping, rowNum, "swift/bic", bankMeta.bic || "");
-          writeIfColExists_(dest, mapping, rowNum, "Bank name", bankMeta.bankName || "");
-          writeIfColExists_(dest, mapping, rowNum, "Bank address", bankMeta.address || "");
-          writeIfColExists_(dest, mapping, rowNum, "Bank city", bankMeta.city || "");
+          writeIfColExists_(dest, mapping, rowNum, "kod swift banku", bankMeta.bic || "");
         } else {
           log_(runId, "WARN", "GOV_IBAN_HTTP", { rowNum, httpCode: ibanRes.httpCode });
         }
