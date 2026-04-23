@@ -11,10 +11,9 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
   const dedupe = buildDestDedupeIndex_(runId, mapping, dest);
   const srcCols = mapping.sourceHeaders.length;
   const srcValues = source.getRange(2, 1, sourceLastRow - 1, srcCols).getValues();
-
-  // Użytkownik często czyści arkusz DEST "do zera" (łącznie z nagłówkami).
-  // enforceDestHeaders_ odtwarza nagłówki w wierszu 1, więc "pusty" DEST oznacza: brak danych poniżej nagłówków.
-  const destIsEmpty = dest.getLastRow() < 2;
+  const historyStore = (CONFIG.FORCE_IMPORT === true)
+    ? null
+    : getImportHistoryStore_(runId, dest.getParent());
 
   const markIdx = mapping.srcIndex[normalizeKey_(CONFIG.SOURCE_MARK_COLUMN_NAME)];
 
@@ -27,7 +26,15 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
   });
 
   const candidates = [];
-  const reasons = { noNip: 0, alreadyMarkedImported: 0, deduped: 0, accepted: 0, runtimeCut: 0, limitCut: 0 };
+  const reasons = {
+    noNip: 0,
+    alreadyMarkedImported: 0,
+    deduped: 0,
+    historyDeduped: 0,
+    accepted: 0,
+    runtimeCut: 0,
+    limitCut: 0
+  };
   const forceMode = CONFIG.FORCE_IMPORT === true;
 
   // Dodatkowe zabezpieczenie: jeżeli w SOURCE są duplikaty (np. ten sam nip+submitted on),
@@ -47,36 +54,38 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
 
     if (!nip) { reasons.noNip++; continue; }
 
-    // Hard safety rule (normal mode):
-    // once SOURCE row is marked IN_DEST or DONE, never import it again.
-    // Re-import is allowed only via FORCE_IMPORT.
-    if (!forceMode && markIdx != null && markIdx >= 0) {
-      const markVal = String(row[markIdx] || "").trim();
-      if (markVal) {
-        const isImportMarked = markVal.indexOf(CONFIG.SOURCE_MARK_PREFIX_IMPORT) === 0;
-        const isDoneMarked = markVal.indexOf(CONFIG.SOURCE_MARK_PREFIX_DONE) === 0;
-        if (isImportMarked || isDoneMarked) {
-          reasons.alreadyMarkedImported++;
-          continue;
-        }
-      }
-    }
-
     // Klucz deduplikacji (DEST / wiersze usunięte / odtworzenie braków)
     const key = makeDedupeKey_(nip, sub);
 
     if (!forceMode) {
       if (dedupe[key]) { reasons.deduped++; continue; }
+      if (historyStore && historyStore.index[key]) { reasons.historyDeduped++; continue; }
+
+      // Safety rule:
+      // marked SOURCE rows (IN_DEST/DONE) are archived in durable key-history and skipped.
+      if (markIdx != null && markIdx >= 0) {
+        const markVal = String(row[markIdx] || "").trim();
+        const markState = getSourceMarkState_(markVal);
+        if (markState) {
+          reasons.alreadyMarkedImported++;
+          if (historyStore) {
+            queueImportHistoryEntry_(historyStore, key, nip, sub, rowNum, "SOURCE_MARK_" + markState);
+          }
+          continue;
+        }
+      }
+
       if (seenKeysInRun[key]) { reasons.duplicateInRun = (reasons.duplicateInRun || 0) + 1; continue; }
       seenKeysInRun[key] = true;
     }
 
-    candidates.push({ sourceRow: rowNum, nip, submittedOn: sub, values: row });
+    candidates.push({ sourceRow: rowNum, nip, submittedOn: sub, values: row, key });
     reasons.accepted++;
   }
 
 
   if (candidates.length === 0) {
+    if (historyStore) flushImportHistoryStore_(runId, historyStore);
     log_(runId, "INFO", "IMPORT_NONE_DIAG", {
       reason: "NO_CANDIDATES",
       sourceLastRow,
@@ -167,6 +176,14 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
     }
   }
 
+  if (!forceMode && historyStore) {
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      queueImportHistoryEntry_(historyStore, c.key, c.nip, c.submittedOn, c.sourceRow, "IMPORTED");
+    }
+    flushImportHistoryStore_(runId, historyStore);
+  }
+
   const rowMap = candidates.map((c, i) => ({ srcRow: c.sourceRow, destRow: destStartRow + i }));
 
   log_(runId, "INFO", "IMPORT_OK", { imported: candidates.length, destStartRow, destEndRow, forceMode, reasons });
@@ -230,6 +247,87 @@ function findSourceHeaderRawIndex_(headers, rawName) {
     if (raw === target) return i;
   }
   return null;
+}
+
+function getImportHistoryStore_(runId, ss) {
+  const sheetName = String((CONFIG && CONFIG.IMPORT_HISTORY_SHEET_NAME) || "_Import_History");
+  const headers = ["DedupeKey", "NIP", "SubmittedOnKey", "SourceRow", "Reason", "MarkedAt"];
+
+  let sh = ss.getSheetByName(sheetName);
+  if (!sh && !CONFIG.FEATURES.DRY_RUN) {
+    sh = ss.insertSheet(sheetName);
+    sh.hideSheet();
+  }
+  if (!sh) {
+    return { sheet: null, index: {}, pending: [] };
+  }
+
+  const lastCol = sh.getLastColumn();
+  const needHeaderWrite = lastCol < headers.length || !arraysEqual_(sh.getRange(1, 1, 1, headers.length).getValues()[0].map(v => String(v || "").trim()), headers);
+  if (needHeaderWrite && !CONFIG.FEATURES.DRY_RUN) {
+    const missingCols = headers.length - lastCol;
+    if (missingCols > 0) sh.insertColumnsAfter(lastCol, missingCols);
+    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+  }
+
+  const idx = {};
+  const lastRow = sh.getLastRow();
+  if (lastRow >= 2) {
+    const keys = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (let i = 0; i < keys.length; i++) {
+      const key = String(keys[i][0] || "").trim();
+      if (!key) continue;
+      idx[key] = true;
+    }
+  }
+
+  log_(runId, "INFO", "IMPORT_HISTORY_READY", { sheetName: sheetName, keys: Object.keys(idx).length });
+  return { sheet: sh, index: idx, pending: [] };
+}
+
+function queueImportHistoryEntry_(store, key, nip, submittedOn, sourceRow, reason) {
+  if (!store || !store.sheet) return false;
+  const k = String(key || "").trim();
+  if (!k || store.index[k]) return false;
+
+  const row = [
+    k,
+    String(nip || "").trim(),
+    normalizeSubmittedOnKey_(submittedOn),
+    Number(sourceRow || 0) || "",
+    String(reason || "").trim(),
+    formatNow_()
+  ];
+
+  store.index[k] = true;
+  store.pending.push(row);
+  return true;
+}
+
+function flushImportHistoryStore_(runId, store) {
+  if (!store || !store.sheet || !store.pending || store.pending.length === 0) return;
+  if (CONFIG.FEATURES.DRY_RUN) {
+    store.pending = [];
+    return;
+  }
+
+  const startRow = Math.max(2, store.sheet.getLastRow() + 1);
+  const rows = store.pending.slice();
+  store.sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
+  store.pending = [];
+
+  log_(runId, "INFO", "IMPORT_HISTORY_APPEND", {
+    added: rows.length,
+    totalKeys: Object.keys(store.index).length
+  });
+}
+
+function getSourceMarkState_(markVal) {
+  const s = String(markVal || "").trim();
+  if (!s) return "";
+  if (s.indexOf(CONFIG.SOURCE_MARK_PREFIX_DONE) === 0) return "DONE";
+  if (s.indexOf(CONFIG.SOURCE_MARK_PREFIX_IMPORT) === 0) return "IN_DEST";
+  return "";
 }
 
 function parseMarkedDestRow_(markVal) {

@@ -51,6 +51,9 @@ const CONFIG = {
   // Safety mode (default): never re-import rows that were already marked IN_DEST/DONE.
   // Set true only for controlled recovery runs.
   SOURCE_REIMPORT_IF_MISSING_IN_DEST: false,
+  // Durable archive of processed dedupe keys (NIP + SubmittedOn).
+  // Prevents accidental re-imports of historical rows even after manual row deletions.
+  IMPORT_HISTORY_SHEET_NAME: "_Import_History",
 
   // Dedupe strategy.
   // For forms where the same company (same NIP) may submit multiple onboarding entries,

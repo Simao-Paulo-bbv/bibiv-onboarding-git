@@ -33,11 +33,94 @@ function makeDedupeKey_(nip, submittedOn) {
 }
 
 function normalizeSubmittedOnKey_(submittedOn) {
-  if (!submittedOn) return "";
-  if (submittedOn instanceof Date) {
-    return Utilities.formatDate(submittedOn, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+  if (submittedOn === null || submittedOn === undefined) return "";
+
+  const parsed = parseSubmittedOnDate_(submittedOn);
+  if (parsed) {
+    return Utilities.formatDate(parsed, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
   }
-  return String(submittedOn).trim();
+
+  // Fallback: keep deterministic normalized string if parsing failed.
+  return String(submittedOn || "").trim().replace(/\s+/g, " ");
+}
+
+function parseSubmittedOnDate_(value) {
+  try {
+    if (value instanceof Date) {
+      return isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value === "number" && isFinite(value)) {
+      // Google Sheets serial date fallback (days since 1899-12-30).
+      if (value > 20000 && value < 80000) {
+        const serialMs = Math.round((value - 25569) * 86400 * 1000);
+        const serialDate = new Date(serialMs);
+        if (!isNaN(serialDate.getTime())) return serialDate;
+      }
+      const epochDate = new Date(value);
+      if (!isNaN(epochDate.getTime())) return epochDate;
+    }
+
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+    const s = raw.replace("T", " ").replace(/Z$/, "");
+
+    // yyyy-mm-dd [HH:mm[:ss]]
+    let m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (m) {
+      const y = Number(m[1]);
+      const mo = Number(m[2]);
+      const d = Number(m[3]);
+      const hh = Number(m[4] || 0);
+      const mi = Number(m[5] || 0);
+      const ss = Number(m[6] || 0);
+      const dt = new Date(y, mo - 1, d, hh, mi, ss);
+      if (dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d) return dt;
+    }
+
+    // slash format (MM/DD/YYYY or DD/MM/YYYY) with heuristic
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (m) {
+      const a = Number(m[1]);
+      const b = Number(m[2]);
+      const y = Number(m[3]);
+      const hh = Number(m[4] || 0);
+      const mi = Number(m[5] || 0);
+      const ss = Number(m[6] || 0);
+
+      let month = a;
+      let day = b;
+      if (a > 12 && b <= 12) {
+        // DD/MM/YYYY
+        day = a;
+        month = b;
+      } else if (b > 12 && a <= 12) {
+        // MM/DD/YYYY
+        month = a;
+        day = b;
+      }
+      const dt = new Date(y, month - 1, day, hh, mi, ss);
+      if (dt.getFullYear() === y && dt.getMonth() === month - 1 && dt.getDate() === day) return dt;
+    }
+
+    // dot format (DD.MM.YYYY)
+    m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ ,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (m) {
+      const d = Number(m[1]);
+      const mo = Number(m[2]);
+      const y = Number(m[3]);
+      const hh = Number(m[4] || 0);
+      const mi = Number(m[5] || 0);
+      const ss = Number(m[6] || 0);
+      const dt = new Date(y, mo - 1, d, hh, mi, ss);
+      if (dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d) return dt;
+    }
+
+    const guessed = new Date(s);
+    return isNaN(guessed.getTime()) ? null : guessed;
+  } catch (e) {
+    return null;
+  }
 }
 
 function makeRunId_() {
