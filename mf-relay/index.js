@@ -7,11 +7,12 @@ app.use(express.json({ limit: "256kb" }));
 
 const PORT = Number(process.env.PORT || 8080);
 const RELAY_AUTH_TOKEN = String(process.env.RELAY_AUTH_TOKEN || "").trim();
-const PROXY_HOST = String(process.env.PROXY_HOST || "brd.superproxy.io").trim();
-const PROXY_PORT = Number(process.env.PROXY_PORT || 33335);
-const PROXY_USER = String(process.env.PROXY_USER || "").trim();
-const PROXY_PASS = String(process.env.PROXY_PASS || "").trim();
-const TIMEOUT_MS = Number(process.env.MF_TIMEOUT_MS || 20000);
+const PROXY_HOST = String(process.env.PROXY_HOST || process.env.BRD_PROXY_HOST || "brd.superproxy.io").trim();
+const PROXY_PORT = Number(process.env.PROXY_PORT || process.env.BRD_PROXY_PORT || 33335);
+const PROXY_USER = String(process.env.PROXY_USER || process.env.BRD_PROXY_USERNAME || "").trim();
+const PROXY_PASS = String(process.env.PROXY_PASS || process.env.BRD_PROXY_PASSWORD || "").trim();
+const MF_BASE_URL = String(process.env.MF_BASE_URL || "https://wl-api.mf.gov.pl").trim().replace(/\/+$/, "");
+const TIMEOUT_MS = Number(process.env.MF_TIMEOUT_MS || process.env.MF_RELAY_TIMEOUT_MS || 20000);
 
 function unauthorized(res) {
   return res.status(401).json({ error: "unauthorized" });
@@ -21,6 +22,12 @@ function parseBearerToken(req) {
   const auth = String(req.headers.authorization || "");
   if (!auth.toLowerCase().startsWith("bearer ")) return "";
   return auth.slice(7).trim();
+}
+
+function parseRelayAuthToken(req) {
+  const fromHeader = String(req.headers["x-relay-auth"] || "").trim();
+  if (fromHeader) return fromHeader;
+  return parseBearerToken(req);
 }
 
 function validateInput(nip, date) {
@@ -49,7 +56,7 @@ app.get("/health", (_req, res) => {
 app.post("/mf/search", async (req, res) => {
   try {
     if (RELAY_AUTH_TOKEN) {
-      const token = parseBearerToken(req);
+      const token = parseRelayAuthToken(req);
       if (!token || token !== RELAY_AUTH_TOKEN) {
         return unauthorized(res);
       }
@@ -60,7 +67,7 @@ app.post("/mf/search", async (req, res) => {
       return res.status(400).json({ error: input.error });
     }
 
-    const url = `https://wl-api.mf.gov.pl/api/search/nip/${encodeURIComponent(input.nip)}?date=${encodeURIComponent(input.date)}`;
+    const url = `${MF_BASE_URL}/api/search/nip/${encodeURIComponent(input.nip)}?date=${encodeURIComponent(input.date)}`;
     const agent = buildProxyAgent();
 
     const response = await axios.get(url, {
@@ -74,6 +81,36 @@ app.post("/mf/search", async (req, res) => {
   } catch (err) {
     const message = err?.message ? String(err.message) : "relay_error";
     return res.status(502).json({ error: "relay_failed", message });
+  }
+});
+
+app.get("/debug/proxy-check", async (req, res) => {
+  try {
+    if (RELAY_AUTH_TOKEN) {
+      const token = parseRelayAuthToken(req);
+      if (!token || token !== RELAY_AUTH_TOKEN) {
+        return unauthorized(res);
+      }
+    }
+
+    const agent = buildProxyAgent();
+    const url = "https://geo.brdtest.com/welcome.txt?product=resi&method=native";
+    const response = await axios.get(url, {
+      httpsAgent: agent,
+      proxy: false,
+      timeout: TIMEOUT_MS,
+      validateStatus: () => true
+    });
+
+    return res.status(response.status).json({
+      ok: response.status >= 200 && response.status < 300,
+      status: response.status,
+      via: "proxy",
+      body: String(response.data || "").slice(0, 2000)
+    });
+  } catch (err) {
+    const message = err?.message ? String(err.message) : "proxy_check_error";
+    return res.status(502).json({ error: "proxy_check_failed", message });
   }
 });
 

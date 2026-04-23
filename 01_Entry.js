@@ -13,10 +13,17 @@ function runSyncAndProcess() {
   }
 
   try {
-    log_(runId, "INFO", "START");
+    const effectiveUser = safeGetEffectiveUserEmail_();
+    log_(runId, "INFO", "START", {
+      effectiveUser: effectiveUser || "",
+      mfUseRelay: !!(CONFIG && CONFIG.MF_USE_RELAY),
+      mfRelayUrl: String((CONFIG && CONFIG.MF_RELAY_URL) || ""),
+      mfRelayUseGoogleIdToken: !CONFIG || CONFIG.MF_RELAY_USE_GOOGLE_ID_TOKEN !== false,
+      mfRelayIdTokenSa: String((CONFIG && CONFIG.MF_RELAY_IDTOKEN_SERVICE_ACCOUNT) || "")
+    });
 
-    const sourceSS = SpreadsheetApp.openById(CONFIG.SOURCE_SPREADSHEET_ID);
-    const destSS = SpreadsheetApp.openById(CONFIG.DEST_SPREADSHEET_ID);
+    const sourceSS = openSpreadsheetWithLog_(runId, CONFIG.SOURCE_SPREADSHEET_ID, "SOURCE_SPREADSHEET_ID");
+    const destSS = openSpreadsheetWithLog_(runId, CONFIG.DEST_SPREADSHEET_ID, "DEST_SPREADSHEET_ID");
 
     const source = getSheet_(sourceSS, CONFIG.SOURCE_SHEET_NAME, false);
     const dest = getSheet_(destSS, CONFIG.DEST_SHEET_NAME, false);
@@ -98,6 +105,28 @@ log_(runId, "INFO", "END", {
     throw e;
   } finally {
     lock.releaseLock();
+  }
+}
+
+function safeGetEffectiveUserEmail_() {
+  try {
+    const u = Session.getEffectiveUser();
+    return u && u.getEmail ? String(u.getEmail() || "") : "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function openSpreadsheetWithLog_(runId, spreadsheetId, configKey) {
+  try {
+    return SpreadsheetApp.openById(spreadsheetId);
+  } catch (e) {
+    log_(runId, "ERROR", "SPREADSHEET_ACCESS_DENIED", {
+      configKey: configKey,
+      spreadsheetId: String(spreadsheetId || ""),
+      err: String(e)
+    });
+    throw e;
   }
 }
 

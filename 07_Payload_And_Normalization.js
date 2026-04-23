@@ -74,6 +74,7 @@ function normalizeForAppSheet_(col, v) {
   if (typeof v === "boolean") return v;
 
   const colName = String(col || "");
+  const isBirthDateCol = colName === "data urodzenia 6" || colName === "data urodzenia";
   const yesNoCols = {
     "Lead Created": true,
     "Bank aproval": true,
@@ -98,6 +99,14 @@ function normalizeForAppSheet_(col, v) {
       return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd");
     }
     return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm:ss");
+  }
+
+  // For optional birth-date fields we must preserve true blank values.
+  // Sending empty string may trigger AppSheet initial-value/default date behavior.
+  if (isBirthDateCol) {
+    const s = String(v === null || v === undefined ? "" : v).trim();
+    if (!s || s === "-" || s === "//") return null;
+    return s;
   }
 
   if (colName === "nip" || colName === "NIP_Control") {

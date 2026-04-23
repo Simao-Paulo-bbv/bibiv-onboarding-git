@@ -4,7 +4,7 @@
 function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   const nipClean = String(nip || "").trim();
   const relayUrl = String((CONFIG && CONFIG.MF_RELAY_URL) || "").trim();
-  const useRelay = relayUrl !== "";
+  const useRelay = !!(CONFIG && CONFIG.MF_USE_RELAY) && relayUrl !== "";
   const url = useRelay
     ? relayUrl
     : CONFIG.MF_API_URL
@@ -18,7 +18,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
 
   try {
     const res = useRelay
-      ? fetchViaMfRelay_(url, nipClean, dateStr)
+      ? fetchViaMfRelay_(runId, rowNum, url, nipClean, dateStr)
       : UrlFetchApp.fetch(url, {
           method: "get",
           muteHttpExceptions: true,
@@ -103,10 +103,28 @@ function safeDateForMf_(submittedOn) {
   return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
 }
 
-function fetchViaMfRelay_(relayUrl, nip, dateStr) {
+function fetchViaMfRelay_(runId, rowNum, relayUrl, nip, dateStr) {
   const headers = { "Content-Type": "application/json" };
-  const token = String((CONFIG && CONFIG.MF_RELAY_AUTH_TOKEN) || "").trim();
-  if (token) headers["Authorization"] = "Bearer " + token;
+  const sharedToken = String((CONFIG && CONFIG.MF_RELAY_AUTH_TOKEN) || "").trim();
+  const sharedTokenHeader = String((CONFIG && CONFIG.MF_RELAY_AUTH_HEADER) || "X-Relay-Auth").trim();
+  const useGoogleIdToken = !CONFIG || CONFIG.MF_RELAY_USE_GOOGLE_ID_TOKEN !== false;
+
+  if (useGoogleIdToken) {
+    const idToken = getRelayIdTokenForAudience_(runId, rowNum, relayUrl);
+    if (idToken) {
+      headers["Authorization"] = "Bearer " + idToken;
+    } else {
+      log_(runId, "WARN", "MF_RELAY_IDTOKEN_MISSING", {
+        rowNum,
+        audience: normalizeRelayAudience_(relayUrl),
+        serviceAccount: String((CONFIG && CONFIG.MF_RELAY_IDTOKEN_SERVICE_ACCOUNT) || "")
+      });
+    }
+    if (sharedToken) headers[sharedTokenHeader] = sharedToken;
+  } else if (sharedToken) {
+    // Legacy mode for public relay: bearer is the relay shared secret.
+    headers["Authorization"] = "Bearer " + sharedToken;
+  }
 
   return UrlFetchApp.fetch(relayUrl, {
     method: "post",
@@ -118,4 +136,64 @@ function fetchViaMfRelay_(relayUrl, nip, dateStr) {
     headers: headers,
     payload: JSON.stringify({ nip: String(nip || ""), date: String(dateStr || "") })
   });
+}
+
+function getRelayIdTokenForAudience_(runId, rowNum, relayUrl) {
+  const audience = normalizeRelayAudience_(relayUrl);
+  const cacheKey = "mf_relay_idt:" + audience;
+  try {
+    const cache = CacheService.getScriptCache();
+    const cached = String(cache.get(cacheKey) || "").trim();
+    if (cached) return cached;
+  } catch (e) {}
+
+  const serviceAccount = String((CONFIG && CONFIG.MF_RELAY_IDTOKEN_SERVICE_ACCOUNT) || "").trim();
+  if (!serviceAccount) return "";
+
+  const url =
+    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/" +
+    encodeURIComponent(serviceAccount) +
+    ":generateIdToken";
+
+  const res = UrlFetchApp.fetch(url, {
+    method: "post",
+    muteHttpExceptions: true,
+    contentType: "application/json",
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    payload: JSON.stringify({
+      audience: audience,
+      includeEmail: true
+    }),
+    timeout: 15000
+  });
+
+  if (res.getResponseCode() !== 200) {
+    log_(runId, "WARN", "MF_RELAY_IDTOKEN_FETCH_FAIL", {
+      rowNum,
+      httpCode: res.getResponseCode(),
+      bodySnippet: String(res.getContentText() || "").slice(0, 800),
+      audience: audience,
+      serviceAccount: serviceAccount
+    });
+    return "";
+  }
+  const parsed = safeJsonParse_(res.getContentText() || "");
+  const token = String(parsed && parsed.token ? parsed.token : "").trim();
+  if (!token) return "";
+
+  try {
+    const cache = CacheService.getScriptCache();
+    cache.put(cacheKey, token, 300);
+  } catch (e) {}
+  return token;
+}
+
+function normalizeRelayAudience_(relayUrl) {
+  const raw = String(relayUrl || "").trim();
+  if (!raw) return "";
+  const q = raw.indexOf("?");
+  const noQuery = q >= 0 ? raw.slice(0, q) : raw;
+  const slash = noQuery.indexOf("/", noQuery.indexOf("://") + 3);
+  if (slash < 0) return noQuery.replace(/\/+$/, "");
+  return noQuery.slice(0, slash).replace(/\/+$/, "");
 }

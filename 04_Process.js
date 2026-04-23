@@ -325,7 +325,7 @@ function ensurePeopleRefsForRow_(runId, dest, mapping, rowNum, payloadMain) {
 
   // CONTACT
   if (fullContact && idxContact != null && !contactId) {
-    contactId = Utilities.getUuid();
+    contactId = buildDeterministicPersonId_(onboardingId, "Contact", fullContact);
     dest.getRange(rowNum, idxContact + 1).setValue(contactId);
     SpreadsheetApp.flush();
     pushPersonToPeopleList_(runId, contactId, fullContact, "Contact", "imię i nazwisko osoby kontaktowej", onboardingId, rowNum);
@@ -333,7 +333,7 @@ function ensurePeopleRefsForRow_(runId, dest, mapping, rowNum, payloadMain) {
 
   // MANAGER
   if (fullManager && idxManager != null && !managerId) {
-    managerId = Utilities.getUuid();
+    managerId = buildDeterministicPersonId_(onboardingId, "Manager", fullManager);
     dest.getRange(rowNum, idxManager + 1).setValue(managerId);
     SpreadsheetApp.flush();
     pushPersonToPeopleList_(runId, managerId, fullManager, "Manager", "imię i nazwisko kierownika", onboardingId, rowNum);
@@ -341,7 +341,7 @@ function ensurePeopleRefsForRow_(runId, dest, mapping, rowNum, payloadMain) {
 
   // BENEFICIAL OWNER (natural person)
   if (fullBeneficial && idxBeneficial != null && !beneficialId) {
-    beneficialId = Utilities.getUuid();
+    beneficialId = buildDeterministicPersonId_(onboardingId, "BeneficialOwner", fullBeneficial);
     dest.getRange(rowNum, idxBeneficial + 1).setValue(beneficialId);
     SpreadsheetApp.flush();
     pushPersonToPeopleList_(runId, beneficialId, fullBeneficial, "BeneficialOwner", "imię i nazwisko beneficjenta", onboardingId, rowNum);
@@ -364,8 +364,36 @@ function pushPersonToPeopleList_(runId, personId, fullName, role, sourceFullName
   peopleRow[CONFIG.PEOPLE.COL_SOURCE_FULLNAME_COL] = sourceFullNameCol;
   peopleRow[CONFIG.PEOPLE.COL_ONBOARDING_ID] = onboardingId;
 
-  callAppSheet_(runId, CONFIG.APPSHEET_TABLE_PEOPLE, peopleRow, CONFIG.APPSHEET_ACTION_ADD, rowNum);
-  log_(runId, "INFO", "PEOPLE_ADD_OK", { rowNum, role, personId });
+  try {
+    callAppSheet_(runId, CONFIG.APPSHEET_TABLE_PEOPLE, peopleRow, CONFIG.APPSHEET_ACTION_ADD, rowNum);
+    log_(runId, "INFO", "PEOPLE_ADD_OK", { rowNum, role, personId });
+  } catch (e) {
+    if (isDuplicatePeopleRowError_(e)) {
+      log_(runId, "INFO", "PEOPLE_ADD_SKIP_EXISTS", { rowNum, role, personId });
+      return;
+    }
+    throw e;
+  }
+}
+
+function buildDeterministicPersonId_(onboardingId, role, fullName) {
+  const normalizedName = String(fullName || "").trim().toLowerCase();
+  const raw = [String(onboardingId || "").trim(), String(role || "").trim(), normalizedName].join("|");
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, raw, Utilities.Charset.UTF_8);
+  const b64 = Utilities.base64EncodeWebSafe(digest);
+  return "P_" + b64.slice(0, 22);
+}
+
+function isDuplicatePeopleRowError_(err) {
+  const s = String(err || "").toLowerCase();
+  if (!s) return false;
+  return (
+    s.indexOf("duplicate") >= 0 ||
+    s.indexOf("already exists") >= 0 ||
+    s.indexOf("already in use") >= 0 ||
+    s.indexOf("already has a row with key") >= 0 ||
+    s.indexOf("cannot add duplicate") >= 0
+  );
 }
 
 /** =========================
@@ -416,7 +444,8 @@ function evaluateMfReadinessForAdd_(payload) {
   const missing = [];
   if (!payload) return { ready: false, missing: ["payload"] };
 
-  const requiredCols = ["name_api", "statusVat", "regon", "krs"];
+  const requiredCols = ["name_api", "statusVat", "regon"];
+  if (CONFIG && CONFIG.REQUIRE_KRS_FOR_ADD === true) requiredCols.push("krs");
   for (let i = 0; i < requiredCols.length; i++) {
     const key = requiredCols[i];
     const val = String(payload[key] || "").trim();
