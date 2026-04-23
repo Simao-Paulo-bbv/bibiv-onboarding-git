@@ -51,9 +51,10 @@ function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
   }
 
   // AppSheet MAIN has required Email for contact person in current schema.
-  // For Add requests, provide deterministic fallback to avoid hard API failure on empty source email.
+  // For Add requests, provide deterministic fallback to avoid hard API failure on empty source email/phone.
   if (actionStr === "add") {
     payload["email osoby kontaktowej"] = ensureRequiredContactEmail_(payload["email osoby kontaktowej"], payload);
+    payload["numer telefonu osoby kontaktowej"] = ensureRequiredContactPhone_(payload["numer telefonu osoby kontaktowej"], payload);
   }
 
   // Some form fields may temporarily disappear in Squarespace.
@@ -210,6 +211,25 @@ function ensureRequiredContactEmail_(emailValue, payload) {
   const nipRaw = String(payload && (payload["NIP_Control"] || payload["nip"]) ? (payload["NIP_Control"] || payload["nip"]) : "").trim();
   const nipDigits = nipRaw.replace(/[^\d]/g, "") || "unknown";
   return "noemail+" + nipDigits + "@bibiv.invalid";
+}
+
+function ensureRequiredContactPhone_(phoneValue, payload) {
+  const direct = normalizePhoneDigits_(phoneValue);
+  if (direct) return Number(direct);
+
+  const fallbackSalesPhone = normalizePhoneDigits_(payload && payload["numer telefonu przedstawiciela handlowego"]);
+  if (fallbackSalesPhone) return Number(fallbackSalesPhone);
+
+  const nipRaw = String(payload && (payload["NIP_Control"] || payload["nip"]) ? (payload["NIP_Control"] || payload["nip"]) : "").trim();
+  const nipDigits = nipRaw.replace(/[^\d]/g, "");
+
+  // Last-resort deterministic placeholder (PL country prefix + 9 digits from NIP).
+  const localPart = (nipDigits ? nipDigits.slice(-9) : "").padStart(9, "0");
+  return Number("48" + localPart);
+}
+
+function normalizePhoneDigits_(value) {
+  return String(value === null || value === undefined ? "" : value).replace(/[^\d]/g, "");
 }
 
 function looksLikeEmail_(value) {

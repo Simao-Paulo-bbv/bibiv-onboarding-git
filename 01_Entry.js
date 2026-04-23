@@ -138,6 +138,9 @@ function processPendingDestRows_(runId, mapping, source, dest, startedAt) {
   const cIdx = mapping.destKey.contactPersonIdx;
   const mIdx = mapping.destKey.managerPersonIdx;
   const bIdx = mapping.destKey.beneficialPersonIdx;
+  const cNameIdx = mapping.dstIndex["imię i nazwisko osoby kontaktowej"];
+  const mNameIdx = mapping.dstIndex["imię i nazwisko kierownika"];
+  const bNameIdx = mapping.dstIndex["imię i nazwisko beneficjenta"];
 
   if (syncIdx == null || idIdx == null || nipIdx == null) {
     log_(runId, "WARN", "PENDING_SKIP_MISSING_INDEXES", { syncIdx, idIdx, nipIdx });
@@ -160,6 +163,9 @@ function processPendingDestRows_(runId, mapping, source, dest, startedAt) {
   addCol(cIdx, "CREF");
   addCol(mIdx, "MREF");
   addCol(bIdx, "BREF");
+  addCol(cNameIdx, "CNAME");
+  addCol(mNameIdx, "MNAME");
+  addCol(bNameIdx, "BNAME");
 
   // zbuduj zakres minimalny: od minIdx do maxIdx i potem wyciągaj wartości po offsetach
   const minIdx = Math.min.apply(null, colsToFetch) + 1;
@@ -203,11 +209,14 @@ if (scanRowStart !== 2) {
     const cref = String(getVal("CREF") || "").trim();
     const mref = String(getVal("MREF") || "").trim();
     const bref = String(getVal("BREF") || "").trim();
+    const cName = String(getVal("CNAME") || "").trim();
+    const mName = String(getVal("MNAME") || "").trim();
+    const bName = String(getVal("BNAME") || "").trim();
 
     const needsRefs =
-      (cIdx != null && !cref) ||
-      (mIdx != null && !mref) ||
-      (bIdx != null && !bref);
+      (cIdx != null && cName !== "" && !cref) ||
+      (mIdx != null && mName !== "" && !mref) ||
+      (bIdx != null && bName !== "" && !bref);
 
     // Pending only when MAIN is not yet confirmed in AppSheet
     // or when MAIN exists but refs are still missing (Edit backfill).
