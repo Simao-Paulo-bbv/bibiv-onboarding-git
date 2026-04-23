@@ -30,7 +30,7 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
     noNip: 0,
     alreadyMarkedImported: 0,
     deduped: 0,
-    historyDeduped: 0,
+    historySeen: 0,
     accepted: 0,
     runtimeCut: 0,
     limitCut: 0
@@ -59,7 +59,9 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
 
     if (!forceMode) {
       if (dedupe[key]) { reasons.deduped++; continue; }
-      if (historyStore && historyStore.index[key]) { reasons.historyDeduped++; continue; }
+      // History is advisory only. Real blocker is presence in DEST (dedupe above)
+      // or explicit SOURCE marker state below.
+      if (historyStore && historyStore.index[key]) { reasons.historySeen++; }
 
       // Safety rule:
       // marked SOURCE rows (IN_DEST/DONE) are archived in durable key-history and skipped.
