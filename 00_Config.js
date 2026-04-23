@@ -48,9 +48,10 @@ const CONFIG = {
   // - DONE ...      => pełny proces zakończony (MF + AppSheet), wiersz nie jest ponownie przetwarzany
   SOURCE_MARK_PREFIX_IMPORT: "IN_DEST",
   SOURCE_MARK_PREFIX_DONE: "DONE",
-  // Safety mode (default): never re-import rows that were already marked IN_DEST/DONE.
-  // Set true only for controlled recovery runs.
-  SOURCE_REIMPORT_IF_MISSING_IN_DEST: false,
+  // Recovery mode:
+  // when SOURCE row is marked IN_DEST/DONE but key is missing in DEST, allow re-import.
+  // Keep true to auto-heal gaps after accidental deletions in DEST.
+  SOURCE_REIMPORT_IF_MISSING_IN_DEST: true,
   // Durable archive of processed dedupe keys (NIP + SubmittedOn).
   // Prevents accidental re-imports of historical rows even after manual row deletions.
   IMPORT_HISTORY_SHEET_NAME: "_Import_History",

@@ -29,6 +29,7 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
   const reasons = {
     noNip: 0,
     alreadyMarkedImported: 0,
+    markedButMissingInDest: 0,
     deduped: 0,
     historySeen: 0,
     accepted: 0,
@@ -69,11 +70,15 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
         const markVal = String(row[markIdx] || "").trim();
         const markState = getSourceMarkState_(markVal);
         if (markState) {
-          reasons.alreadyMarkedImported++;
-          if (historyStore) {
-            queueImportHistoryEntry_(historyStore, key, nip, sub, rowNum, "SOURCE_MARK_" + markState);
+          const allowReimportMissing = !!(CONFIG && CONFIG.SOURCE_REIMPORT_IF_MISSING_IN_DEST);
+          if (!allowReimportMissing) {
+            reasons.alreadyMarkedImported++;
+            if (historyStore) {
+              queueImportHistoryEntry_(historyStore, key, nip, sub, rowNum, "SOURCE_MARK_" + markState);
+            }
+            continue;
           }
-          continue;
+          reasons.markedButMissingInDest++;
         }
       }
 
