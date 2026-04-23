@@ -79,21 +79,39 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       const statusVatIdx = mapping.dstIndex["statusVat"];
       const regonIdx = mapping.dstIndex["regon"];
       const krsIdx = mapping.dstIndex["krs"];
+      const workingAddressIdx = mapping.dstIndex["workingAddress"];
+      const residenceAddressIdx = mapping.dstIndex["residenceAddress"];
 
-      const hasMfData =
-        (nameApiIdx != null && String(row[nameApiIdx] || "").trim()) ||
-        (statusVatIdx != null && String(row[statusVatIdx] || "").trim()) ||
-        (regonIdx != null && String(row[regonIdx] || "").trim()) ||
-        (krsIdx != null && String(row[krsIdx] || "").trim());
+      const nameApiVal = nameApiIdx != null ? String(row[nameApiIdx] || "").trim() : "";
+      const statusVatVal = statusVatIdx != null ? String(row[statusVatIdx] || "").trim() : "";
+      const regonVal = regonIdx != null ? String(row[regonIdx] || "").trim() : "";
+      const krsVal = krsIdx != null ? String(row[krsIdx] || "").trim() : "";
+      const workingAddressVal = workingAddressIdx != null ? String(row[workingAddressIdx] || "").trim() : "";
+      const residenceAddressVal = residenceAddressIdx != null ? String(row[residenceAddressIdx] || "").trim() : "";
+
+      const hasMfDataAny = !!(nameApiVal || statusVatVal || regonVal || krsVal || workingAddressVal || residenceAddressVal);
+      const hasMfDataComplete =
+        !!nameApiVal &&
+        !!statusVatVal &&
+        !!regonVal &&
+        !!(workingAddressVal || residenceAddressVal) &&
+        (!(CONFIG && CONFIG.REQUIRE_KRS_FOR_ADD === true) || !!krsVal);
 
       const shouldSkipMf =
         (CONFIG.FEATURES.MF_SKIP_IF_MF_OK && hasMfOk) ||
-        (CONFIG.FEATURES.MF_SKIP_IF_DATA_PRESENT && hasMfData) ||
+        (CONFIG.FEATURES.MF_SKIP_IF_DATA_PRESENT && hasMfDataComplete) ||
         hasMfRateLimit ||
         hasMfNoSubject;
 
       if (shouldSkipMf) {
-        log_(runId, "INFO", "MF_SKIP", { rowNum, hasMfOk, hasMfData, hasMfRateLimit, hasMfNoSubject });
+        log_(runId, "INFO", "MF_SKIP", {
+          rowNum,
+          hasMfOk,
+          hasMfData: hasMfDataAny,
+          hasMfDataComplete,
+          hasMfRateLimit,
+          hasMfNoSubject
+        });
       } else {
         const subDate = safeDateForMf_(row[mapping.destKey.submittedIdx]);
         mfCallResult = callMfAndWrite_(runId, dest, mapping, rowNum, nipRaw, subDate) || mfCallResult;
