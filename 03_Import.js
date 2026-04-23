@@ -250,39 +250,67 @@ function findSourceHeaderRawIndex_(headers, rawName) {
 }
 
 function getImportHistoryStore_(runId, ss) {
-  const sheetName = String((CONFIG && CONFIG.IMPORT_HISTORY_SHEET_NAME) || "_Import_History");
-  const headers = ["DedupeKey", "NIP", "SubmittedOnKey", "SourceRow", "Reason", "MarkedAt"];
+  try {
+    const sheetName = String((CONFIG && CONFIG.IMPORT_HISTORY_SHEET_NAME) || "_Import_History");
+    const headers = ["DedupeKey", "NIP", "SubmittedOnKey", "SourceRow", "Reason", "MarkedAt"];
 
-  let sh = ss.getSheetByName(sheetName);
-  if (!sh && !CONFIG.FEATURES.DRY_RUN) {
-    sh = ss.insertSheet(sheetName);
-    sh.hideSheet();
-  }
-  if (!sh) {
+    let sh = ss.getSheetByName(sheetName);
+    if (!sh && !CONFIG.FEATURES.DRY_RUN) {
+      sh = ss.insertSheet(sheetName);
+      try { sh.hideSheet(); } catch (eHide) {}
+    }
+    if (!sh) {
+      return { sheet: null, index: {}, pending: [] };
+    }
+
+    // Ensure sheet has enough physical columns before write.
+    let maxCols = 0;
+    try {
+      maxCols = Number(sh.getMaxColumns() || 0);
+    } catch (eMax) {
+      maxCols = Number(sh.getLastColumn() || 0);
+    }
+    if (!Number.isFinite(maxCols)) maxCols = 0;
+
+    if (maxCols < headers.length && !CONFIG.FEATURES.DRY_RUN) {
+      const toAdd = headers.length - maxCols;
+      if (maxCols <= 0) {
+        // Defensive fallback for corrupted/empty sheet grid.
+        sh.insertColumns(1, headers.length);
+      } else {
+        sh.insertColumnsAfter(maxCols, toAdd);
+      }
+      maxCols = headers.length;
+    }
+
+    const lastCol = Number(sh.getLastColumn() || 0);
+    const currentHeaders =
+      (lastCol >= headers.length)
+        ? sh.getRange(1, 1, 1, headers.length).getValues()[0].map(v => String(v || "").trim())
+        : [];
+    const needHeaderWrite = currentHeaders.length !== headers.length || !arraysEqual_(currentHeaders, headers);
+    if (needHeaderWrite && !CONFIG.FEATURES.DRY_RUN) {
+      sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    }
+
+    const idx = {};
+    const lastRow = sh.getLastRow();
+    if (lastRow >= 2) {
+      const keys = sh.getRange(2, 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < keys.length; i++) {
+        const key = String(keys[i][0] || "").trim();
+        if (!key) continue;
+        idx[key] = true;
+      }
+    }
+
+    log_(runId, "INFO", "IMPORT_HISTORY_READY", { sheetName: sheetName, keys: Object.keys(idx).length });
+    return { sheet: sh, index: idx, pending: [] };
+  } catch (e) {
+    // Import history is a safety layer; it must never crash whole sync run.
+    log_(runId, "WARN", "IMPORT_HISTORY_DISABLED", { err: String(e).slice(0, 700) });
     return { sheet: null, index: {}, pending: [] };
   }
-
-  const lastCol = sh.getLastColumn();
-  const needHeaderWrite = lastCol < headers.length || !arraysEqual_(sh.getRange(1, 1, 1, headers.length).getValues()[0].map(v => String(v || "").trim()), headers);
-  if (needHeaderWrite && !CONFIG.FEATURES.DRY_RUN) {
-    const missingCols = headers.length - lastCol;
-    if (missingCols > 0) sh.insertColumnsAfter(lastCol, missingCols);
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
-  }
-
-  const idx = {};
-  const lastRow = sh.getLastRow();
-  if (lastRow >= 2) {
-    const keys = sh.getRange(2, 1, lastRow - 1, 1).getValues();
-    for (let i = 0; i < keys.length; i++) {
-      const key = String(keys[i][0] || "").trim();
-      if (!key) continue;
-      idx[key] = true;
-    }
-  }
-
-  log_(runId, "INFO", "IMPORT_HISTORY_READY", { sheetName: sheetName, keys: Object.keys(idx).length });
-  return { sheet: sh, index: idx, pending: [] };
 }
 
 function queueImportHistoryEntry_(store, key, nip, submittedOn, sourceRow, reason) {
@@ -311,15 +339,20 @@ function flushImportHistoryStore_(runId, store) {
     return;
   }
 
-  const startRow = Math.max(2, store.sheet.getLastRow() + 1);
-  const rows = store.pending.slice();
-  store.sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
-  store.pending = [];
+  try {
+    const startRow = Math.max(2, store.sheet.getLastRow() + 1);
+    const rows = store.pending.slice();
+    store.sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows);
+    store.pending = [];
 
-  log_(runId, "INFO", "IMPORT_HISTORY_APPEND", {
-    added: rows.length,
-    totalKeys: Object.keys(store.index).length
-  });
+    log_(runId, "INFO", "IMPORT_HISTORY_APPEND", {
+      added: rows.length,
+      totalKeys: Object.keys(store.index).length
+    });
+  } catch (e) {
+    log_(runId, "WARN", "IMPORT_HISTORY_APPEND_FAIL", { err: String(e).slice(0, 700) });
+    store.pending = [];
+  }
 }
 
 function getSourceMarkState_(markVal) {
