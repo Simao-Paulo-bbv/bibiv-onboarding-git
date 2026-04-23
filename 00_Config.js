@@ -191,10 +191,6 @@ const APPSHEET_SCHEMA = [
   "numer wpisu do knf",
   "numer rachunku bankowego",
   "kod swift banku",
-  "swift/bic",
-  "Bank name",
-  "Bank address",
-  "Bank city",
   "imię i nazwisko osoby kontaktowej",
   "email osoby kontaktowej",
   "numer telefonu osoby kontaktowej",
@@ -215,6 +211,11 @@ const APPSHEET_SCHEMA = [
   "ContactPersonID",
   "ManagerPersonID",
   "BeneficialOwnerPersonID",
+  // NEW: bank metadata from IBAN API (must stay at end to avoid shifting existing columns)
+  "swift/bic",
+  "Bank name",
+  "Bank address",
+  "Bank city",
 ];
 
 const DEST_SCHEMA = APPSHEET_SCHEMA.filter(h => h !== "_RowNumber");
@@ -279,10 +280,6 @@ const APPSHEET_MAIN_ALLOWED_COLS = [
   "numer wpisu do knf",
   "numer rachunku bankowego",
   "kod swift banku",
-  "swift/bic",
-  "Bank name",
-  "Bank address",
-  "Bank city",
   "imię i nazwisko osoby kontaktowej",
   "email osoby kontaktowej",
   "numer telefonu osoby kontaktowej",
@@ -303,4 +300,9 @@ const APPSHEET_MAIN_ALLOWED_COLS = [
   "ContactPersonID",
   "ManagerPersonID",
   "BeneficialOwnerPersonID",
+  // NEW bank metadata fields (appended at the end)
+  "swift/bic",
+  "Bank name",
+  "Bank address",
+  "Bank city",
 ];
