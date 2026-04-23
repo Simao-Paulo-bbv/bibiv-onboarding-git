@@ -21,8 +21,8 @@ function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
   }
 
   if (payload["numer telefonu osoby kontaktowej"] !== "" && payload["numer telefonu osoby kontaktowej"] != null) {
-    const phone = String(payload["numer telefonu osoby kontaktowej"]).replace(/[^\d]/g, "");
-    payload["numer telefonu osoby kontaktowej"] = phone ? Number(phone) : "";
+    const phone = normalizePhoneDigits_(payload["numer telefonu osoby kontaktowej"]);
+    payload["numer telefonu osoby kontaktowej"] = phone || "";
   }
 
   // AppSheet MAIN requires accountNumbers (EnumList).
@@ -51,10 +51,11 @@ function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
   }
 
   // AppSheet MAIN has required Email for contact person in current schema.
-  // For Add requests, provide deterministic fallback to avoid hard API failure on empty source email/phone.
+  // For Add requests, provide deterministic email fallback only.
+  // Phone must stay true-to-source (no synthetic values).
   if (actionStr === "add") {
     payload["email osoby kontaktowej"] = ensureRequiredContactEmail_(payload["email osoby kontaktowej"], payload);
-    payload["numer telefonu osoby kontaktowej"] = ensureRequiredContactPhone_(payload["numer telefonu osoby kontaktowej"], payload);
+    payload["numer telefonu osoby kontaktowej"] = ensureRequiredContactPhone_(payload["numer telefonu osoby kontaktowej"]);
   }
 
   // Some form fields may temporarily disappear in Squarespace.
@@ -130,11 +131,12 @@ function normalizeForAppSheet_(col, v) {
 
 
   if (colName === "numer telefonu osoby kontaktowej") {
-    if (typeof v === "number") return v;
+    const raw = String(v === null || v === undefined ? "" : v).trim().toLowerCase();
+    if (raw === "(null) null-null") return "";
+    if (typeof v === "number") return String(v);
     const s = String(v).replace(/[^\d]/g, "");
     if (!s) return "";
-    const n = Number(s);
-    return isNaN(n) ? "" : n;
+    return s;
   }
 
   if (typeof v === "string") return v.trim();
@@ -213,23 +215,16 @@ function ensureRequiredContactEmail_(emailValue, payload) {
   return "noemail+" + nipDigits + "@bibiv.invalid";
 }
 
-function ensureRequiredContactPhone_(phoneValue, payload) {
+function ensureRequiredContactPhone_(phoneValue) {
   const direct = normalizePhoneDigits_(phoneValue);
-  if (direct) return Number(direct);
-
-  const fallbackSalesPhone = normalizePhoneDigits_(payload && payload["numer telefonu przedstawiciela handlowego"]);
-  if (fallbackSalesPhone) return Number(fallbackSalesPhone);
-
-  const nipRaw = String(payload && (payload["NIP_Control"] || payload["nip"]) ? (payload["NIP_Control"] || payload["nip"]) : "").trim();
-  const nipDigits = nipRaw.replace(/[^\d]/g, "");
-
-  // Last-resort deterministic placeholder (PL country prefix + 9 digits from NIP).
-  const localPart = (nipDigits ? nipDigits.slice(-9) : "").padStart(9, "0");
-  return Number("48" + localPart);
+  if (direct) return direct;
+  return "";
 }
 
 function normalizePhoneDigits_(value) {
-  return String(value === null || value === undefined ? "" : value).replace(/[^\d]/g, "");
+  const raw = String(value === null || value === undefined ? "" : value).trim().toLowerCase();
+  if (!raw || raw === "(null) null-null") return "";
+  return raw.replace(/[^\d]/g, "");
 }
 
 function looksLikeEmail_(value) {

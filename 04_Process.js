@@ -248,12 +248,7 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       }
 
       const mfReadiness = evaluateMfReadinessForAdd_(payloadMain);
-      const allowAddWithoutMfReadiness =
-        mfCallResult.rateLimited ||
-        currentSync.indexOf("MF_RATE_LIMIT") >= 0 ||
-        mfCallResult.reason === "NO_SUBJECT" ||
-        currentSync.indexOf("MF_NO_SUBJECT") >= 0;
-      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !mfReadiness.ready && !allowAddWithoutMfReadiness) {
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !mfReadiness.ready) {
         if (syncIdx != null) {
           appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_WAITING_MF_DATA ${formatNow_()}`);
         }
@@ -263,6 +258,28 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
           payloadId,
           payloadNip,
           missing: mfReadiness.missing.join(","),
+          rowId: id,
+          rowNip: nipRaw
+        });
+        log_(runId, "INFO", "ROW_END", { rowNum });
+        processed++;
+        continue;
+      }
+
+      const payloadContactPhone = String(
+        payloadMain && payloadMain["numer telefonu osoby kontaktowej"] != null
+          ? payloadMain["numer telefonu osoby kontaktowej"]
+          : ""
+      ).trim();
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !payloadContactPhone) {
+        if (syncIdx != null) {
+          appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_WAITING_REQUIRED_PHONE ${formatNow_()}`);
+        }
+        log_(runId, "WARN", "APPSHEET_WAITING_REQUIRED_PHONE", {
+          rowNum,
+          actionToSend,
+          payloadId,
+          payloadNip,
           rowId: id,
           rowNip: nipRaw
         });
