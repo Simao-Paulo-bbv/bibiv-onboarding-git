@@ -50,6 +50,12 @@ function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
     }
   }
 
+  // AppSheet MAIN has required Email for contact person in current schema.
+  // For Add requests, provide deterministic fallback to avoid hard API failure on empty source email.
+  if (actionStr === "add") {
+    payload["email osoby kontaktowej"] = ensureRequiredContactEmail_(payload["email osoby kontaktowej"], payload);
+  }
+
   // Some form fields may temporarily disappear in Squarespace.
   // Keep them in flow when present, but avoid sending empty placeholders to AppSheet.
   dropOptionalEmptyPayloadFields_(payload);
@@ -191,6 +197,25 @@ function normalizeAccountNumbersCsv_(value) {
     out.push(v);
   }
   return out.join(",");
+}
+
+function ensureRequiredContactEmail_(emailValue, payload) {
+  const raw = String(emailValue === null || emailValue === undefined ? "" : emailValue).trim();
+  if (looksLikeEmail_(raw)) return raw;
+
+  // Try any known fallback already present in payload.
+  const fallbackSource = String(payload && payload["email przedstawiciela handlowego"] ? payload["email przedstawiciela handlowego"] : "").trim();
+  if (looksLikeEmail_(fallbackSource)) return fallbackSource;
+
+  const nipRaw = String(payload && (payload["NIP_Control"] || payload["nip"]) ? (payload["NIP_Control"] || payload["nip"]) : "").trim();
+  const nipDigits = nipRaw.replace(/[^\d]/g, "") || "unknown";
+  return "noemail+" + nipDigits + "@bibiv.invalid";
+}
+
+function looksLikeEmail_(value) {
+  const s = String(value || "").trim();
+  if (!s) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
 function dropOptionalEmptyPayloadFields_(payload) {

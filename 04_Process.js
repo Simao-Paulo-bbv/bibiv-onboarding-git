@@ -73,6 +73,7 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
     if (CONFIG.FEATURES.MF_ENABLED) {
       const hasMfOk = currentSync.indexOf("MF_OK") >= 0;
       const hasMfRateLimit = currentSync.indexOf("MF_RATE_LIMIT") >= 0;
+      const hasMfNoSubject = currentSync.indexOf("MF_NO_SUBJECT") >= 0;
 
       const nameApiIdx = mapping.dstIndex["name_api"];
       const statusVatIdx = mapping.dstIndex["statusVat"];
@@ -88,10 +89,11 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       const shouldSkipMf =
         (CONFIG.FEATURES.MF_SKIP_IF_MF_OK && hasMfOk) ||
         (CONFIG.FEATURES.MF_SKIP_IF_DATA_PRESENT && hasMfData) ||
-        hasMfRateLimit;
+        hasMfRateLimit ||
+        hasMfNoSubject;
 
       if (shouldSkipMf) {
-        log_(runId, "INFO", "MF_SKIP", { rowNum, hasMfOk, hasMfData, hasMfRateLimit });
+        log_(runId, "INFO", "MF_SKIP", { rowNum, hasMfOk, hasMfData, hasMfRateLimit, hasMfNoSubject });
       } else {
         const subDate = safeDateForMf_(row[mapping.destKey.submittedIdx]);
         mfCallResult = callMfAndWrite_(runId, dest, mapping, rowNum, nipRaw, subDate) || mfCallResult;
@@ -100,6 +102,8 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
             appendSyncMarker_(dest, rowNum, syncIdx, `MF_OK ${formatNow_()}`);
           } else if (mfCallResult.rateLimited) {
             appendSyncMarker_(dest, rowNum, syncIdx, `MF_RATE_LIMIT ${formatNow_()}`);
+          } else if (mfCallResult.reason === "NO_SUBJECT") {
+            appendSyncMarker_(dest, rowNum, syncIdx, `MF_NO_SUBJECT ${formatNow_()}`);
           }
         }
       }
@@ -226,8 +230,12 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       }
 
       const mfReadiness = evaluateMfReadinessForAdd_(payloadMain);
-      const allowAddWithMfRateLimit = mfCallResult.rateLimited || currentSync.indexOf("MF_RATE_LIMIT") >= 0;
-      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !mfReadiness.ready && !allowAddWithMfRateLimit) {
+      const allowAddWithoutMfReadiness =
+        mfCallResult.rateLimited ||
+        currentSync.indexOf("MF_RATE_LIMIT") >= 0 ||
+        mfCallResult.reason === "NO_SUBJECT" ||
+        currentSync.indexOf("MF_NO_SUBJECT") >= 0;
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !mfReadiness.ready && !allowAddWithoutMfReadiness) {
         if (syncIdx != null) {
           appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_WAITING_MF_DATA ${formatNow_()}`);
         }
