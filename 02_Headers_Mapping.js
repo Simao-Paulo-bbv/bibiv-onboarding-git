@@ -17,18 +17,23 @@ function enforceDestHeaders_(runId, dest) {
   const current = dest.getRange(1, 1, 1, schemaLen).getValues()[0].map(v => String(v || "").trim());
   const same = arraysEqual_(current, DEST_SCHEMA);
 
-  // If headers were previously expanded and schema rolled back,
-  // stale header names past schemaLen can break exact-name mapping.
-  // Keep data untouched; clear only header cells beyond active schema.
-  const clearTrailingHeadersIfAny_ = function () {
+  // If schema was previously expanded and rolled back, AppSheet still sees
+  // physical extra columns and returns schema-mismatch errors.
+  // We must physically trim extra columns to match current schema length.
+  const trimTrailingColsIfAny_ = function () {
     const lastCol = dest.getLastColumn();
     if (lastCol > schemaLen && !CONFIG.FEATURES.DRY_RUN) {
-      dest.getRange(1, schemaLen + 1, 1, lastCol - schemaLen).clearContent();
+      dest.deleteColumns(schemaLen + 1, lastCol - schemaLen);
+      log_(runId, "WARN", "DEST_EXTRA_COLS_TRIMMED", {
+        fromCols: lastCol,
+        toCols: schemaLen,
+        deleted: lastCol - schemaLen
+      });
     }
   };
 
   if (same) {
-    clearTrailingHeadersIfAny_();
+    trimTrailingColsIfAny_();
     enforceTextFormats_(dest);
     log_(runId, "INFO", "DEST_HEADERS_OK", { totalCols: dest.getLastColumn(), schemaCols: schemaLen });
     return;
@@ -37,7 +42,7 @@ function enforceDestHeaders_(runId, dest) {
   if (!CONFIG.FEATURES.DRY_RUN) {
     dest.getRange(1, 1, 1, schemaLen).setValues([DEST_SCHEMA]);
   }
-  clearTrailingHeadersIfAny_();
+  trimTrailingColsIfAny_();
 
   enforceTextFormats_(dest);
   log_(runId, "INFO", "DEST_HEADERS_ENFORCED", { schemaCols: schemaLen, lastCol: dest.getLastColumn() });
