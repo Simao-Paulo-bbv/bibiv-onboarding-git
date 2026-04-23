@@ -1,5 +1,5 @@
 /*******************************************************
- * BIBIV™ Onboarding Sync + MF VAT + AppSheet (FIXED)
+ * BIBIV™ Onboarding Sync + GOV APIs + AppSheet (FIXED)
  * + People roles: Contact / Manager / BeneficialOwner
  * + Writes PersonID refs back to Main table:
  *   ContactPersonID / ManagerPersonID / BeneficialOwnerPersonID
@@ -62,6 +62,16 @@ const CONFIG = {
   FORCE_IMPORT: false,
   FORCE_IMPORT_LIMIT: 1,
 
+  // GOV API Platform (VAT/REGON/IBAN)
+  GOV_API_BASE_URL: "https://gov.api.hypnotype.com",
+  GOV_API_KEY: "jb43WutIT32vH5WUbyWvNtgQkEO1_v5CKoczgYs7b9c",
+  GOV_TIMEOUT_MS: 20000,
+
+  GOV_VAT_PATH: "/v1/vat/search",
+  GOV_REGON_PATH: "/v1/regon/search",
+  GOV_IBAN_PATH: "/v1/iban/validate",
+
+  // Legacy MF direct API (kept as fallback/rollback option).
   MF_API_URL: "https://wl-api.mf.gov.pl/api/search/nip/{nip}?date={date}",
   MF_TIMEOUT_MS: 15000,
   // Optional relay (recommended when MF rate-limit WL-191/429 blocks direct calls).
@@ -160,6 +170,10 @@ const APPSHEET_SCHEMA = [
   "workingAddress",
   "residenceAddress",
   "accountNumbers",
+  "swift/bic",
+  "Bank name",
+  "Bank address",
+  "Bank city",
   "Is_Generating_Now",
   "Generation_Triggered_By",
   "sync_status",
@@ -213,6 +227,10 @@ const SYSTEM_DEFAULTS = {
   "workingAddress": "",
   "residenceAddress": "",
   "accountNumbers": "",
+  "swift/bic": "",
+  "Bank name": "",
+  "Bank address": "",
+  "Bank city": "",
   "sync_status": "",
 };
 
@@ -240,6 +258,10 @@ const APPSHEET_MAIN_ALLOWED_COLS = [
   "workingAddress",
   "residenceAddress",
   "accountNumbers",
+  "swift/bic",
+  "Bank name",
+  "Bank address",
+  "Bank city",
   "Is_Generating_Now",
   "Generation_Triggered_By",
   "sync_status",
