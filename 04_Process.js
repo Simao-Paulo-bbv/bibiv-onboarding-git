@@ -175,11 +175,22 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
 
     // 1) PEOPLE: ensure 3 roles and write PersonIDs back to MAIN sheet
     if (CONFIG.FEATURES.APPSHEET_ENABLED && CONFIG.FEATURES.PEOPLE_LIST_ENABLED) {
-      const refs = ensurePeopleRefsForRow_(runId, dest, mapping, rowNum, payloadMain);
-      // inject refs into payload
-      if (refs.contactId) payloadMain[CONFIG.MAIN_REF_COLS.CONTACT] = refs.contactId;
-      if (refs.managerId) payloadMain[CONFIG.MAIN_REF_COLS.MANAGER] = refs.managerId;
-      if (refs.beneficialId) payloadMain[CONFIG.MAIN_REF_COLS.BENEFICIAL] = refs.beneficialId;
+      try {
+        const refs = ensurePeopleRefsForRow_(runId, dest, mapping, rowNum, payloadMain);
+        // inject refs into payload
+        if (refs.contactId) payloadMain[CONFIG.MAIN_REF_COLS.CONTACT] = refs.contactId;
+        if (refs.managerId) payloadMain[CONFIG.MAIN_REF_COLS.MANAGER] = refs.managerId;
+        if (refs.beneficialId) payloadMain[CONFIG.MAIN_REF_COLS.BENEFICIAL] = refs.beneficialId;
+      } catch (e) {
+        if (isAppSheetSchemaMismatchError_(e)) {
+          if (syncIdx != null) appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_SCHEMA_MISMATCH ${formatNow_()}`);
+          log_(runId, "WARN", "APPSHEET_SCHEMA_MISMATCH", { rowNum, err: String(e).slice(0, 900) });
+          log_(runId, "INFO", "ROW_END", { rowNum });
+          processed++;
+          continue;
+        }
+        throw e;
+      }
     }
 
     // 2) MAIN push (Add for new, Edit for already OK but missing refs)
@@ -502,4 +513,15 @@ function evaluateMfReadinessForAdd_(payload) {
   }
 
   return { ready: missing.length === 0, missing: missing };
+}
+
+function isAppSheetSchemaMismatchError_(err) {
+  const s = String(err || "").toLowerCase();
+  if (!s) return false;
+  return (
+    s.indexOf("mismatch in the number of columns") >= 0 ||
+    s.indexOf("regenerate the table column structure") >= 0 ||
+    (s.indexOf("data table") >= 0 && s.indexOf("is not available") >= 0) ||
+    s.indexOf("appsheet_schema_mismatch") >= 0
+  );
 }

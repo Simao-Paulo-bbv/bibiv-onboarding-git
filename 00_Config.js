@@ -88,7 +88,7 @@ const CONFIG = {
   MF_RELAY_URL: "https://mf-relay-reqllazjbq-lm.a.run.app/mf/search",
   // For private Cloud Run relay: generate Google ID token for Cloud Run audience
   // via IAM Credentials API and send as Authorization Bearer.
-  MF_RELAY_USE_GOOGLE_ID_TOKEN: true,
+  MF_RELAY_USE_GOOGLE_ID_TOKEN: false,
   MF_RELAY_IDTOKEN_SERVICE_ACCOUNT: "relay-deployer@bibiv-application-form-493920.iam.gserviceaccount.com",
   // App-level shared secret sent to relay in header (defense in depth).
   MF_RELAY_AUTH_TOKEN: "",

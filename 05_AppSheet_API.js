@@ -71,10 +71,24 @@ if (isVerbose_() || httpCode !== 200) {
 
 
   if (httpCode !== 200) {
-    throw new Error(`AppSheet httpCode=${httpCode} body=${text.slice(0, 900)}`);
+    const err = new Error(`AppSheet httpCode=${httpCode} body=${text.slice(0, 900)}`);
+    if (isAppSheetSchemaMismatchBody_(text)) {
+      err.code = "APPSHEET_SCHEMA_MISMATCH";
+    }
+    throw err;
   }
   if (parsed && parsed.Success === false) {
     throw new Error(`AppSheet Success=false: ${parsed.ErrorDescription || parsed.Error || "unknown"}`);
   }
   return { httpCode, parsed };
+}
+
+function isAppSheetSchemaMismatchBody_(bodyText) {
+  const s = String(bodyText || "").toLowerCase();
+  if (!s) return false;
+  return (
+    s.indexOf("mismatch in the number of columns") >= 0 ||
+    s.indexOf("please regenerate the table column structure") >= 0 ||
+    s.indexOf("data table") >= 0 && s.indexOf("is not available") >= 0
+  );
 }
