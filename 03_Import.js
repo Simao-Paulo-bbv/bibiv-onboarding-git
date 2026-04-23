@@ -47,15 +47,15 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
 
     if (!nip) { reasons.noNip++; continue; }
 
-    // Safety rules for SOURCE markers:
-    // - DONE: never import again (finalized flow)
-    // - IN_DEST: allow controlled re-import only when key is missing in DEST
-    //   (e.g. row deleted from DEST or import interrupted before stable state)
+    // Hard safety rule (normal mode):
+    // once SOURCE row is marked IN_DEST or DONE, never import it again.
+    // Re-import is allowed only via FORCE_IMPORT.
     if (!forceMode && markIdx != null && markIdx >= 0) {
       const markVal = String(row[markIdx] || "").trim();
       if (markVal) {
+        const isImportMarked = markVal.indexOf(CONFIG.SOURCE_MARK_PREFIX_IMPORT) === 0;
         const isDoneMarked = markVal.indexOf(CONFIG.SOURCE_MARK_PREFIX_DONE) === 0;
-        if (isDoneMarked) {
+        if (isImportMarked || isDoneMarked) {
           reasons.alreadyMarkedImported++;
           continue;
         }
@@ -66,27 +66,9 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
     const key = makeDedupeKey_(nip, sub);
 
     if (!forceMode) {
-      let allowRestoreImport = false;
-
-      // 1) Jeśli SOURCE ma marker IN_DEST/DONE z DEST_ROW, ale ten wiersz w DEST już nie istnieje
-      //    albo nie odpowiada temu samemu kluczowi, pozwól na odtworzenie importu.
-      if (markIdx != null && markIdx >= 0 && !destIsEmpty) {
-        const markVal = String(row[markIdx] || "").trim();
-        if (markVal) {
-          const markedDestRow = parseMarkedDestRow_(markVal);
-          if (markedDestRow != null && !destRowMatchesSource_(dest, mapping, markedDestRow, row)) {
-            allowRestoreImport = true;
-            reasons.markedButMissingInDest = (reasons.markedButMissingInDest || 0) + 1;
-          }
-        }
-      }
-
-      // 2) Standardowa deduplikacja tylko gdy NIE odtwarzamy brakującego rekordu.
-      if (!allowRestoreImport) {
-        if (dedupe[key]) { reasons.deduped++; continue; }
-        if (seenKeysInRun[key]) { reasons.duplicateInRun = (reasons.duplicateInRun || 0) + 1; continue; }
-        seenKeysInRun[key] = true;
-      }
+      if (dedupe[key]) { reasons.deduped++; continue; }
+      if (seenKeysInRun[key]) { reasons.duplicateInRun = (reasons.duplicateInRun || 0) + 1; continue; }
+      seenKeysInRun[key] = true;
     }
 
     candidates.push({ sourceRow: rowNum, nip, submittedOn: sub, values: row });
