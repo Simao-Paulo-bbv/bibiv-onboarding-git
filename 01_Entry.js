@@ -220,8 +220,10 @@ if (scanRowStart !== 2) {
     if (!nip) continue;
 
     const isStatusInit = (status !== "" && status === String(CONFIG.STATUS_TO_SEND));
+    const isStatusEmpty = status === "";
     const hasExternalManagedStatus = (status !== "" && !isStatusInit);
     if (hasExternalManagedStatus) continue;
+    if (CONFIG.GOV_ENRICH_ONLY_STATUS_INIT === true && isStatusEmpty && id) continue;
 
     const hasMainOk = sync.indexOf(CONFIG.MARKERS.MAIN_OK) >= 0;
     const hasRegonBlock = sync.indexOf("MF_REGON_BLOCK") >= 0;

@@ -125,6 +125,7 @@ const CONFIG = {
 
   STATUS_TO_SEND: "Init",
   STATUS_NEED_VERIFICATION: "need verification",
+  GOV_ENRICH_ONLY_STATUS_INIT: true,
   WRITE_STATUS_JUST_IN_TIME: true,
 
   MAX_PAYLOAD_PREVIEW_CHARS: 2000,
@@ -250,6 +251,7 @@ const APPSHEET_SCHEMA = [
 const DEST_SCHEMA = APPSHEET_SCHEMA.filter(h => h !== "_RowNumber");
 
 const SYSTEM_DEFAULTS = {
+  "Status": CONFIG.STATUS_TO_SEND,
   "Lead Created": "",
   "Bank aproval": "",
   "Documents sent to client": "",

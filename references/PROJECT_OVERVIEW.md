@@ -107,6 +107,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 7. **Agreement generator is queue-backed** — AppSheet must enqueue via `generateAgreementFilesFromAppSheet`; the time-trigger worker processes one Job_ID at a time so one onboarding finishes and sends mail before the next.
 8. **REGON hard failures require humans** — persistent `MF_REGON_BLOCK` rows are moved to `Status = "need verification"` and are not retried forever.
 9. **`name_api` refresh is isolated** — `runRefreshNameApiOnly()` updates only `name_api` from REGON/GOV. It must not run import/AppSheet/People/bank logic.
+10. **GOV enrichment status gate** — regular GOV/MF enrichment runs only while `Status = "Init"`; later AppSheet workflow/status changes must not re-run GOV or overwrite `name_api`.
 
 ## Key reference docs in this folder
 

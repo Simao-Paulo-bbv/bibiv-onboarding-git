@@ -82,10 +82,14 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       log_(runId, "INFO", "ID_ASSIGNED", { rowNum, id });
     }
 
+    const canRunGovEnrichment = canRunGovEnrichmentForStatus_(statusVal, idAssignedNow);
+
     // MF enrichment (skip if already done unless missing data)
     let mfCallResult = { ok: false, httpCode: 0, rateLimited: false, reason: "NOT_CALLED" };
     if (CONFIG.FEATURES.MF_ENABLED) {
-      if (mainAlreadyOk) {
+      if (!canRunGovEnrichment) {
+        log_(runId, "INFO", "MF_SKIP_STATUS_NOT_INIT", { rowNum, status: statusVal });
+      } else if (mainAlreadyOk) {
         log_(runId, "INFO", "MF_SKIP_MAIN_ALREADY_OK", { rowNum });
       } else {
       const hasMfOk = currentSync.indexOf("MF_OK") >= 0;
@@ -636,6 +640,16 @@ function evaluateMfReadinessForAdd_(payload) {
   }
 
   return { ready: missing.length === 0, missing: missing };
+}
+
+function canRunGovEnrichmentForStatus_(statusVal, idAssignedNow) {
+  if (!CONFIG || CONFIG.GOV_ENRICH_ONLY_STATUS_INIT !== true) return true;
+  const status = String(statusVal || "").trim();
+  const initStatus = String(CONFIG.STATUS_TO_SEND || "").trim();
+  if (initStatus && status === initStatus) return true;
+  // Compatibility for a row imported by an older config during this same execution.
+  // New imports now receive Status=Init in SYSTEM_DEFAULTS, so this path should be rare.
+  return status === "" && idAssignedNow === true;
 }
 
 function markRowAsNeedVerification_(runId, dest, rowNum, statusIdx, row, reason) {
