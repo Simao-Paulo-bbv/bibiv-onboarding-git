@@ -80,8 +80,9 @@
 ### ✅ Verify by NIP, not by row number
 - DEST rows can be deleted/re-inserted. Row numbers shift. NIP + SubmittedOn is stable.
 
-### ✅ Use the Cloud Run relay when MF rate-limits
-- Direct MF hits WL-191 quickly under load. The relay terminates TLS in `bibiv-application-form-493920` and authenticates with a Google ID Token via IAM Credentials.
+### ✅ Use GOV API for all enrichment
+- REGON, VAT, and IBAN enrichment all go through `gov.api.hypnotype.com`.
+- Do not reintroduce direct MF or relay paths in the Apps Script.
 
 ## Recovery patterns
 
@@ -95,7 +96,7 @@
 - Verify `APPSHEET_SCHEMA` in `00_Config.js` matches.
 
 ### "MF stuck on `MF_NO_SUBJECT`"
-- Transient. Wait one cycle. If persistent, check upstream `gov.api.hypnotype.com` health and the MF relay status.
+- Transient. Wait one cycle. If persistent, check upstream `gov.api.hypnotype.com` health.
 
 ### "Generation job stuck — items created but no files"
 - Check that `Generate Applications` / `Generate Agreements` bots are enabled and watching `Agreements_Files` Adds.

@@ -4,8 +4,7 @@
   "oauthScopes": [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/script.external_request",
-    "https://www.googleapis.com/auth/script.scriptapp",
-    "https://www.googleapis.com/auth/iam"
+    "https://www.googleapis.com/auth/script.scriptapp"
   ],
   "webapp": {
     "executeAs": "USER_DEPLOYING",

@@ -18,8 +18,7 @@ Google Sheet "SOURCE" (raw submissions, headers may rename in Squarespace)
 Google Sheet "DEST" (canonical schema, stable column order)
       │  [04_Process.js]
       │   ├─ assign Onboarding_ID
-      │   ├─ MF enrichment (REGON → VAT → IBAN) via gov.api.hypnotype.com
-      │   │   and Cloud Run MF relay (ID-token auth)
+      │   ├─ GOV enrichment (REGON → VAT → IBAN) via gov.api.hypnotype.com
       │   ├─ Bank_Accounts child sync (11_Bank_Accounts.js)
       │   ├─ optional historical backfill for blank bank/sales-rep fields
       │   ├─ People_List refs (Contact / Manager / Beneficial Owner) with
@@ -72,7 +71,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 
 | File | Purpose |
 |---|---|
-| `00_Config.js` | Spreadsheet IDs, runtime limits, feature toggles, AppSheet creds, GOV/MF config, schema arrays |
+| `00_Config.js` | Spreadsheet IDs, runtime limits, feature toggles, AppSheet creds, GOV config, schema arrays |
 | `01_Entry.js` | `runSyncAndProcess()` entrypoint + 1-minute trigger installer |
 | `02_Headers_Mapping.js` | Squarespace header rename map (parallel aliases, either column wins) |
 | `03_Import.js` | SOURCE → DEST import with dedupe + `_Import_History` hidden sheet |
@@ -87,12 +86,10 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 | `12_Backfill_Existing.js` | Toggle-controlled backfill for legacy rows; currently OFF after representative-field catch-up |
 | `13_Name_Api_Refresh.js` | Maintenance-only refresh for historical `name_api`; updates only that column |
 | `apps-script-docs-creator/` | Standalone Apps Script `BIBIV_Onboarding_DocsCreator` for Agreement PDFs |
-| `mf-relay/` | Cloud Run service (ID-token auth) for MF VAT bypass |
 
 ## External services
 
 - **GOV API at `gov.api.hypnotype.com`** — REGON, VAT, IBAN
-- **MF VAT relay** — Cloud Run service `mf-relay-reqllazjbq-lm.a.run.app/mf/search` in GCP project `bibiv-application-form-493920`. Auth via Google ID Token (IAM Credentials API)
 - **AppSheet REST API v2** — `https://www.appsheet.com/api/v2/apps/{appId}/tables/{table}/Action`, header `ApplicationAccessKey`
 - **Standalone Apps Script `BIBIV_Onboarding_DocsCreator`** — Script ID `1KOKGrJuBw6U2xiNg8UP_7ZlFWbihc2ug7UbBhHgD2p427HN6-drxp3qU`; exports Agreement PDFs through Google Docs/Drive renderer.
 
@@ -108,12 +105,12 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 8. **REGON hard failures require humans** — persistent `MF_REGON_BLOCK` rows are moved to `Status = "need verification"` and are not retried forever.
 9. **`name_api` refresh is isolated** — `runRefreshNameApiOnly()` updates only `name_api` from REGON/GOV. It must not run import/AppSheet/People/bank logic.
 10. **GOV enrichment status gate** — regular GOV/MF enrichment runs only while `Status = "Init"`; later AppSheet workflow/status changes must not re-run GOV or overwrite `name_api`.
-11. **`name_api` source is REGON** — never derive `name_api` from VAT/MF subject names. Regular VAT enrichment must use GOV API; legacy MF VAT fallback is disabled and blocked while `REQUIRE_GOV_API_FOR_VAT=true`.
+11. **`name_api` source is REGON** — never derive `name_api` from VAT subject names. Regular VAT enrichment must use GOV API only.
 
 ## Key reference docs in this folder
 
 - `APPSHEET_ARCHITECTURE.md` — tables, bots, actions, webhook bodies, file paths
 - `APPS_SCRIPT_REFERENCE.md` — file-by-file map, constants, invariants
-- `API_INTEGRATIONS.md` — REGON/VAT/IBAN order, MF relay, AppSheet REST
+- `API_INTEGRATIONS.md` — REGON/VAT/IBAN order and AppSheet REST
 - `CONVENTIONS_AND_PITFALLS.md` — what not to do, recovery patterns
 - `APPS_SCRIPT_AGREEMENT_GENERATOR.md` — new Apps Script PDF generator and AppSheet bot setup for agreements

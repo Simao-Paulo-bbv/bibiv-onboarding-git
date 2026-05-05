@@ -172,8 +172,8 @@ safeDateForMf_(submittedOn)
 
 Role:
 
-- queries `wl-api.mf.gov.pl` by NIP and date,
-- writes returned fields like company name, VAT status, REGON, KRS, registration date,
+- queries GOV API by NIP and date,
+- writes returned fields like VAT status, REGON, KRS, registration date,
 - safely derives query date from submitted date.
 
 ### 1.8 `07_Payload_And_Normalization.gs`

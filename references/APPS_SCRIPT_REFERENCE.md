@@ -67,7 +67,7 @@ Critical guards:
 - Not-VAT path: `subject:null` from REGON → write `statusVat="Not VAT"`, build `residenceAddress` from REGON: `"Ulica NrNier NrNier/NrLok, KodPocztowy Miejscowosc"`. Skip VAT/IBAN.
 - IBAN cache: `CacheService.getScriptCache()` keyed by account number. Skipped entirely if full bank meta already on row.
 - IBAN skipped on hard REGON/VAT error.
-- MF VAT relay (Cloud Run) used for paths that hit MF rate limits (WL-191/429).
+- VAT calls use GOV API only; no direct MF/relay fallback remains in the Apps Script.
 
 ### `07_Payload_And_Normalization.js`
 - `buildAppSheetPayloadFromDest_(dest, rowNum, action)`:

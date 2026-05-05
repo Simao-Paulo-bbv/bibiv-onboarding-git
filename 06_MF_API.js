@@ -6,7 +6,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   const govBase = String((CONFIG && CONFIG.GOV_API_BASE_URL) || "").trim();
   const govKey = String((CONFIG && CONFIG.GOV_API_KEY) || "").trim();
   const hasGovConfig = govBase !== "" && govKey !== "";
-  if (!hasGovConfig && CONFIG && CONFIG.REQUIRE_GOV_API_FOR_VAT === true) {
+  if (!hasGovConfig) {
     log_(runId, "ERROR", "GOV_CONFIG_REQUIRED_FOR_VAT", { rowNum, nip: nipClean });
     return { ok: false, httpCode: 0, rateLimited: false, reason: "GOV_CONFIG_REQUIRED" };
   }
@@ -65,46 +65,17 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   let vatBody = "";
   let vatParsed = null;
 
-  if (hasGovConfig) {
-    try {
-      const vatRes = fetchGovApiGet_(CONFIG.GOV_VAT_PATH, {
-        nip: nipClean,
-        date: String(dateStr || "").trim()
-      });
-      vatHttpCode = vatRes.httpCode;
-      vatBody = vatRes.body;
-      vatParsed = vatRes.parsed;
-    } catch (e) {
-      log_(runId, "WARN", "MF_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
-      return { ok: false, httpCode: 0, rateLimited: false, reason: "VAT_FETCH_ERROR" };
-    }
-  } else {
-    // Rollback path: legacy MF VAT API (direct/relay) when GOV config is not available.
-    const relayUrl = String((CONFIG && CONFIG.MF_RELAY_URL) || "").trim();
-    const useRelay = !!(CONFIG && CONFIG.MF_USE_RELAY) && relayUrl !== "";
-    const url = useRelay
-      ? relayUrl
-      : CONFIG.MF_API_URL
-          .replace("{nip}", encodeURIComponent(nipClean))
-          .replace("{date}", encodeURIComponent(dateStr));
-    try {
-      const res = useRelay
-        ? fetchViaMfRelay_(runId, rowNum, url, nipClean, dateStr)
-        : UrlFetchApp.fetch(url, {
-            method: "get",
-            muteHttpExceptions: true,
-            followRedirects: true,
-            contentType: "application/json",
-            validateHttpsCertificates: true,
-            timeout: CONFIG.MF_TIMEOUT_MS
-          });
-      vatHttpCode = res.getResponseCode();
-      vatBody = res.getContentText() || "";
-      vatParsed = safeJsonParse_(vatBody);
-    } catch (e) {
-      log_(runId, "WARN", "MF_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
-      return { ok: false, httpCode: 0, rateLimited: false, reason: "VAT_FETCH_ERROR" };
-    }
+  try {
+    const vatRes = fetchGovApiGet_(CONFIG.GOV_VAT_PATH, {
+      nip: nipClean,
+      date: String(dateStr || "").trim()
+    });
+    vatHttpCode = vatRes.httpCode;
+    vatBody = vatRes.body;
+    vatParsed = vatRes.parsed;
+  } catch (e) {
+    log_(runId, "WARN", "MF_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
+    return { ok: false, httpCode: 0, rateLimited: false, reason: "VAT_FETCH_ERROR" };
   }
 
   let subj = null;
@@ -152,35 +123,6 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     }
   }
 
-  // Optional rollback fallback for missing/incomplete VAT subject data.
-  // Keep OFF in production. When REQUIRE_GOV_API_FOR_VAT=true, this is never used.
-  if (
-    CONFIG &&
-    CONFIG.MF_LEGACY_VAT_FALLBACK_ENABLED === true &&
-    CONFIG.REQUIRE_GOV_API_FOR_VAT !== true &&
-    hasGovConfig &&
-    ((subj && !isMfSubjectCompleteForMain_(subj)) || (!subj && !vatHasRecognizedSubjectField))
-  ) {
-    const legacyFallback = fetchLegacyMfSubjectWithFallback_(runId, rowNum, nipClean, String(dateStr || "").trim());
-    if (legacyFallback.subject) {
-      if (!subj) {
-        subj = legacyFallback.subject;
-      } else {
-        subj = mergeMfSubjectsPreferPrimary_(subj, legacyFallback.subject);
-      }
-      log_(runId, "INFO", "MF_LEGACY_FALLBACK_USED", {
-        rowNum,
-        fallbackHttpCode: legacyFallback.httpCode,
-        fallbackDate: legacyFallback.dateUsed || ""
-      });
-      if (vatHttpCode !== 200) {
-        vatHttpCode = legacyFallback.httpCode || vatHttpCode;
-        vatBody = legacyFallback.body || vatBody;
-        vatParsed = legacyFallback.parsed || vatParsed;
-      }
-    }
-  }
-
   if (isVerbose_()) {
     log_(runId, "INFO", "MF_RESULT", { rowNum, httpCode: vatHttpCode, bodySnippet: String(vatBody || "").slice(0, 700) });
   } else {
@@ -188,8 +130,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   }
 
   if (vatHttpCode !== 200) {
-    const bodyStr = String(vatBody || "");
-    const rateLimited = vatHttpCode === 429 || bodyStr.indexOf("WL-191") >= 0;
+    const rateLimited = vatHttpCode === 429;
     return { ok: false, httpCode: vatHttpCode, rateLimited, reason: rateLimited ? "RATE_LIMIT" : "VAT_HTTP_" + String(vatHttpCode) };
   }
 
@@ -635,211 +576,4 @@ function safeDateForMf_(submittedOn) {
     }
   }
   return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
-}
-
-function fetchLegacyMfResult_(runId, rowNum, nip, dateStr) {
-  const relayUrl = String((CONFIG && CONFIG.MF_RELAY_URL) || "").trim();
-  const useRelay = !!(CONFIG && CONFIG.MF_USE_RELAY) && relayUrl !== "";
-  const url = useRelay
-    ? relayUrl
-    : CONFIG.MF_API_URL
-        .replace("{nip}", encodeURIComponent(String(nip || "")))
-        .replace("{date}", encodeURIComponent(String(dateStr || "")));
-
-  const res = useRelay
-    ? fetchViaMfRelay_(runId, rowNum, url, String(nip || ""), String(dateStr || ""))
-    : UrlFetchApp.fetch(url, {
-        method: "get",
-        muteHttpExceptions: true,
-        followRedirects: true,
-        contentType: "application/json",
-        validateHttpsCertificates: true,
-        timeout: CONFIG.MF_TIMEOUT_MS
-      });
-
-  const body = res.getContentText() || "";
-  return {
-    httpCode: res.getResponseCode(),
-    body: body,
-    parsed: safeJsonParse_(body)
-  };
-}
-
-function fetchLegacyMfSubjectWithFallback_(runId, rowNum, nip, dateStr) {
-  const submitted = String(dateStr || "").trim();
-  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
-  const candidates = [];
-  const seen = {};
-
-  function pushDate(d) {
-    const key = String(d || "");
-    if (seen[key]) return;
-    seen[key] = true;
-    candidates.push(key);
-  }
-
-  pushDate(submitted);
-  pushDate(today);
-  pushDate("");
-
-  for (let i = 0; i < candidates.length; i++) {
-    const d = candidates[i];
-    try {
-      const r = fetchLegacyMfResult_(runId, rowNum, nip, d);
-      const subj = r.httpCode === 200 ? pickSubjectFromMf_(r.parsed) : null;
-      if (subj) {
-        return {
-          subject: subj,
-          httpCode: r.httpCode,
-          body: r.body,
-          parsed: r.parsed,
-          dateUsed: d
-        };
-      }
-    } catch (e) {
-      log_(runId, "WARN", "MF_LEGACY_FALLBACK_FAIL", {
-        rowNum,
-        date: d,
-        err: String(e).slice(0, 300)
-      });
-    }
-  }
-  return { subject: null, httpCode: 0, body: "", parsed: null, dateUsed: "" };
-}
-
-function hasText_(v) {
-  return String(v === null || v === undefined ? "" : v).trim() !== "";
-}
-
-function isMfSubjectCompleteForMain_(subj) {
-  if (!subj) return false;
-  const hasStatusVat = hasText_(subj.statusVat);
-  const hasAddress = hasText_(subj.workingAddress) || hasText_(subj.residenceAddress);
-  return hasStatusVat && hasAddress;
-}
-
-function mergeMfSubjectsPreferPrimary_(primary, fallback) {
-  const p = primary || {};
-  const f = fallback || {};
-  const merged = {};
-  const keys = [
-    "name",
-    "statusVat",
-    "regon",
-    "krs",
-    "registrationLegalDate",
-    "workingAddress",
-    "residenceAddress",
-    "accountNumbers"
-  ];
-
-  for (let i = 0; i < keys.length; i++) {
-    const k = keys[i];
-    const pv = p[k];
-    const fv = f[k];
-    if (k === "accountNumbers") {
-      const pArr = Array.isArray(pv) ? pv.filter(Boolean) : [];
-      const fArr = Array.isArray(fv) ? fv.filter(Boolean) : [];
-      merged[k] = pArr.length ? pArr : fArr;
-      continue;
-    }
-    merged[k] = hasText_(pv) ? pv : fv;
-  }
-
-  return merged;
-}
-
-function fetchViaMfRelay_(runId, rowNum, relayUrl, nip, dateStr) {
-  const headers = { "Content-Type": "application/json" };
-  const sharedToken = String((CONFIG && CONFIG.MF_RELAY_AUTH_TOKEN) || "").trim();
-  const sharedTokenHeader = String((CONFIG && CONFIG.MF_RELAY_AUTH_HEADER) || "X-Relay-Auth").trim();
-  const useGoogleIdToken = !CONFIG || CONFIG.MF_RELAY_USE_GOOGLE_ID_TOKEN !== false;
-
-  if (useGoogleIdToken) {
-    const idToken = getRelayIdTokenForAudience_(runId, rowNum, relayUrl);
-    if (idToken) {
-      headers["Authorization"] = "Bearer " + idToken;
-    } else {
-      log_(runId, "WARN", "MF_RELAY_IDTOKEN_MISSING", {
-        rowNum,
-        audience: normalizeRelayAudience_(relayUrl),
-        serviceAccount: String((CONFIG && CONFIG.MF_RELAY_IDTOKEN_SERVICE_ACCOUNT) || "")
-      });
-    }
-    if (sharedToken) headers[sharedTokenHeader] = sharedToken;
-  } else if (sharedToken) {
-    // Legacy mode for public relay: bearer is the relay shared secret.
-    headers["Authorization"] = "Bearer " + sharedToken;
-  }
-
-  return UrlFetchApp.fetch(relayUrl, {
-    method: "post",
-    muteHttpExceptions: true,
-    followRedirects: true,
-    contentType: "application/json",
-    validateHttpsCertificates: true,
-    timeout: (CONFIG && CONFIG.MF_RELAY_TIMEOUT_MS) || 20000,
-    headers: headers,
-    payload: JSON.stringify({ nip: String(nip || ""), date: String(dateStr || "") })
-  });
-}
-
-function getRelayIdTokenForAudience_(runId, rowNum, relayUrl) {
-  const audience = normalizeRelayAudience_(relayUrl);
-  const cacheKey = "mf_relay_idt:" + audience;
-  try {
-    const cache = CacheService.getScriptCache();
-    const cached = String(cache.get(cacheKey) || "").trim();
-    if (cached) return cached;
-  } catch (e) {}
-
-  const serviceAccount = String((CONFIG && CONFIG.MF_RELAY_IDTOKEN_SERVICE_ACCOUNT) || "").trim();
-  if (!serviceAccount) return "";
-
-  const url =
-    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/" +
-    encodeURIComponent(serviceAccount) +
-    ":generateIdToken";
-
-  const res = UrlFetchApp.fetch(url, {
-    method: "post",
-    muteHttpExceptions: true,
-    contentType: "application/json",
-    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
-    payload: JSON.stringify({
-      audience: audience,
-      includeEmail: true
-    }),
-    timeout: 15000
-  });
-
-  if (res.getResponseCode() !== 200) {
-    log_(runId, "WARN", "MF_RELAY_IDTOKEN_FETCH_FAIL", {
-      rowNum,
-      httpCode: res.getResponseCode(),
-      bodySnippet: String(res.getContentText() || "").slice(0, 800),
-      audience: audience,
-      serviceAccount: serviceAccount
-    });
-    return "";
-  }
-  const parsed = safeJsonParse_(res.getContentText() || "");
-  const token = String(parsed && parsed.token ? parsed.token : "").trim();
-  if (!token) return "";
-
-  try {
-    const cache = CacheService.getScriptCache();
-    cache.put(cacheKey, token, 300);
-  } catch (e) {}
-  return token;
-}
-
-function normalizeRelayAudience_(relayUrl) {
-  const raw = String(relayUrl || "").trim();
-  if (!raw) return "";
-  const q = raw.indexOf("?");
-  const noQuery = q >= 0 ? raw.slice(0, q) : raw;
-  const slash = noQuery.indexOf("/", noQuery.indexOf("://") + 3);
-  if (slash < 0) return noQuery.replace(/\/+$/, "");
-  return noQuery.slice(0, slash).replace(/\/+$/, "");
 }

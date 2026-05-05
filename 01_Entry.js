@@ -17,10 +17,8 @@ function runSyncAndProcess() {
     ensureRunSyncTriggerResetIfRequested_(runId);
     log_(runId, "INFO", "START", {
       effectiveUser: effectiveUser || "",
-      mfUseRelay: !!(CONFIG && CONFIG.MF_USE_RELAY),
-      mfRelayUrl: String((CONFIG && CONFIG.MF_RELAY_URL) || ""),
-      mfRelayUseGoogleIdToken: !CONFIG || CONFIG.MF_RELAY_USE_GOOGLE_ID_TOKEN !== false,
-      mfRelayIdTokenSa: String((CONFIG && CONFIG.MF_RELAY_IDTOKEN_SERVICE_ACCOUNT) || "")
+      govApiBaseUrl: String((CONFIG && CONFIG.GOV_API_BASE_URL) || ""),
+      requireGovApiForVat: !CONFIG || CONFIG.REQUIRE_GOV_API_FOR_VAT !== false
     });
 
     const sourceSS = openSpreadsheetWithLog_(runId, CONFIG.SOURCE_SPREADSHEET_ID, "SOURCE_SPREADSHEET_ID");

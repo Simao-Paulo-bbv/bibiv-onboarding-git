@@ -227,7 +227,7 @@ Markers are append-only (latest concatenated, `APPSHEET_OK` token preserved):
 | `MF_OK` | All MF lookups succeeded |
 | `MF_NOT_VAT` | REGON returned `subject:null` — fast path with synthesized residence address |
 | `MF_NO_SUBJECT` | MF returned no subject (transient) |
-| `MF_RATE_LIMIT` | WL-191 / 429 |
+| `MF_RATE_LIMIT` | GOV VAT HTTP 429 |
 | `MF_REGON_BLOCK` / `MF_VAT_BLOCK` | Hard error from upstream |
 | `APPSHEET_OK` | Add succeeded |
 | `APPSHEET_EDIT_OK` | Edit succeeded |

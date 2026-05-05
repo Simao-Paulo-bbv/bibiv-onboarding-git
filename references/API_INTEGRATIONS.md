@@ -8,11 +8,8 @@ Three endpoints, called in this **fixed order** per row:
 - Input: NIP.
 - Output: company subject + address structure.
 - **REGON accepts NIP** — start here, not from VAT.
-- If `subject:null` → company is **Not VAT**:
-  - Write `statusVat = "Not VAT"`.
-  - Compose `residenceAddress` from REGON address fields:
-    `"Ulica NrNieruchomosci NrNieruchomosci/NrLokalu, KodPocztowy Miejscowosc"`
-  - **Skip VAT and IBAN** entirely. Proceed to AppSheet Add with sparse data.
+- If REGON returns an HTTP/fetch/no-data error, stop the row, mark `MF_REGON_BLOCK`, and set `Status = "need verification"`.
+- `name_api` is sourced from REGON. If REGON returns a valid row but no name, source-sheet `nazwa firmy` is the last-resort fallback.
 
 ### VAT
 - Input: NIP (+ optional date).
@@ -20,6 +17,7 @@ Three endpoints, called in this **fixed order** per row:
   1. With `today's date`.
   2. With no date.
 - Returns `accountNumbers` if VAT-registered.
+- If VAT returns no subject, the row is treated as `Not VAT`; REGON data still supplies the company identity/address.
 - On hard error (block / rate-limit) → marker `MF_VAT_BLOCK` or `MF_RATE_LIMIT`; skip IBAN.
 
 ### IBAN
@@ -28,26 +26,7 @@ Three endpoints, called in this **fixed order** per row:
 - **Skip entirely if the row already has full bank metadata** (avoids burning quota — earlier we burned 1500 calls before this guard).
 - **Skip if REGON or VAT had a hard error** (no useful work to do).
 
-## 2. MF VAT relay (Cloud Run)
-
-Bypasses MF white-list rate limits when calling MF directly.
-
-| Item | Value |
-|---|---|
-| GCP project | `bibiv-application-form-493920` |
-| Service URL | `https://mf-relay-reqllazjbq-lm.a.run.app/mf/search` |
-| Auth | Google ID Token |
-| Token source | IAM Credentials API (service account impersonation) |
-| Local source | `mf-relay/` subfolder of the Apps Script project |
-
-**Auth flow** in Apps Script:
-1. Use `ScriptApp.getOAuthToken()` to call IAM Credentials.
-2. `iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{sa}:generateIdToken` with `audience` = the Cloud Run service URL.
-3. Use the returned ID token as `Authorization: Bearer …` to the relay.
-
-**Toggle**: there is a runtime toggle to flip between direct MF and the relay. Default = relay.
-
-## 3. AppSheet REST API v2
+## 2. AppSheet REST API v2
 
 | Item | Value |
 |---|---|
@@ -69,7 +48,7 @@ Bypasses MF white-list rate limits when calling MF directly.
 
 | Marker | Source | Recovery |
 |---|---|---|
-| `MF_RATE_LIMIT` | WL-191 / 429 | Auto-retry next pass; relay route helps |
+| `MF_RATE_LIMIT` | GOV VAT 429/rate limit | Auto-retry next pass |
 | `MF_REGON_BLOCK` | REGON hard error | Manual investigation |
 | `MF_VAT_BLOCK` | VAT hard error | Manual investigation |
 | `MF_NOT_VAT` | REGON subject:null | OK — fast path |

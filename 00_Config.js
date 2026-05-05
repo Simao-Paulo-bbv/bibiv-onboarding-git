@@ -95,24 +95,6 @@ const CONFIG = {
   GOV_IBAN_PATH: "/v1/iban/validate",
   REQUIRE_GOV_API_FOR_VAT: true,
 
-  // Legacy MF direct API (kept as fallback/rollback option).
-  MF_API_URL: "https://wl-api.mf.gov.pl/api/search/nip/{nip}?date={date}",
-  MF_TIMEOUT_MS: 15000,
-  MF_LEGACY_VAT_FALLBACK_ENABLED: false,
-  // Optional relay (recommended when MF rate-limit WL-191/429 blocks direct calls).
-  // Keep relay config ready, but control usage with MF_USE_RELAY toggle.
-  // false = direct MF API (legacy behavior), true = use relay/proxy.
-  MF_USE_RELAY: true,
-  MF_RELAY_URL: "https://mf-relay-reqllazjbq-lm.a.run.app/mf/search",
-  // For private Cloud Run relay: generate Google ID token for Cloud Run audience
-  // via IAM Credentials API and send as Authorization Bearer.
-  MF_RELAY_USE_GOOGLE_ID_TOKEN: false,
-  MF_RELAY_IDTOKEN_SERVICE_ACCOUNT: "relay-deployer@bibiv-application-form-493920.iam.gserviceaccount.com",
-  // App-level shared secret sent to relay in header (defense in depth).
-  MF_RELAY_AUTH_TOKEN: "",
-  MF_RELAY_AUTH_HEADER: "X-Relay-Auth",
-  MF_RELAY_TIMEOUT_MS: 20000,
-
   APPSHEET_APP_ID: "ebb1aa13-9408-4a7d-8d41-8cb03b9e766f",
   APPSHEET_TABLE_MAIN: "BIBIV_onboarding_APP",
   APPSHEET_TABLE_PEOPLE: "People_List",
