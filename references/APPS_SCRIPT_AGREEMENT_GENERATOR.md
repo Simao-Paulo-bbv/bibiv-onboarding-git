@@ -47,11 +47,12 @@ The actual PDF work is done by bounded per-file workers:
 processNextAgreementFileTask()
 ```
 
-Worker concurrency is intentionally single-lane and scoped to one active generation job:
+Worker concurrency is controlled by `inFlight` leases and scoped to one active generation job:
 
 ```text
-CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM = 1
-CONFIG.DOC_GENERATOR.FILE_WORKER_BATCH_MAX_ITEMS = 7
+CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM = 3
+CONFIG.DOC_GENERATOR.FILE_WORKER_BATCH_MAX_ITEMS = 1
+CONFIG.DOC_GENERATOR.FILE_WORKER_LEASE_TTL_SECONDS = 900
 ```
 
 The active unit is `Job_ID` first, with `Onboarding_ID` as fallback. This keeps parallelism inside one onboarding/NIP package instead of spreading worker time across many different NIPs.
@@ -318,10 +319,11 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 
 Current optimizations:
 
-- Jobs are dispatched quickly and the slow Google Docs copy/export work starts inline in one active worker batch.
-- `FILE_WORKER_PARALLELISM = 1` is intentional: it avoids duplicate worker triggers, Apps Script trigger quota issues, and `already running` claim collisions.
-- A worker processes a batch of files from the active job, not just one file, so the remaining files do not wait for repeated 1-minute trigger delays.
-- Dispatcher starts the first worker batch inline right after enqueueing tasks, so generation begins immediately when the job is picked up.
+- Jobs are dispatched quickly and the slow Google Docs copy/export work starts inline for one file.
+- Additional file workers are allowed only up to `FILE_WORKER_PARALLELISM`; `DOCGEN_FILE_IN_FLIGHT` stores active file leases.
+- Each worker processes one file. When a worker finishes, it releases its lease and starts/schedules the next file if queue capacity remains.
+- Finalizer waits for three conditions: task queue empty, `inFlight = 0`, and every planned PDF physically exists in Drive.
+- Dispatcher starts the first file inline right after enqueueing tasks, so generation begins immediately when the job is picked up.
 - Finalizer runs inline as soon as the worker queue is empty, so `Generated` files are promoted to `Ready` without waiting for a separate time trigger.
 - `DOCGEN_ACTIVE_JOB` blocks dispatching the next queued job until the current job finalizer has written `Ready` for the complete file set.
 - If the active job is waiting but worker tasks are missing, dispatcher/finalizer rebuild missing file tasks from `Agreements_Files` and starts a recovery batch.

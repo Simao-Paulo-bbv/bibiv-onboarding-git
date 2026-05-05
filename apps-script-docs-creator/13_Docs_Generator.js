@@ -39,6 +39,7 @@ function resetDocGenerationQueuesManual() {
     CONFIG.DOC_GENERATOR.ACTIVE_JOB_KEY,
     CONFIG.DOC_GENERATOR.QUEUE_KEY,
     CONFIG.DOC_GENERATOR.FILE_TASK_QUEUE_KEY,
+    CONFIG.DOC_GENERATOR.FILE_IN_FLIGHT_KEY,
     CONFIG.DOC_GENERATOR.FINALIZER_QUEUE_KEY
   ];
 
@@ -123,6 +124,10 @@ function processDocGenerationJob_(runId, args) {
   const dispatched = enqueueAgreementFileTasks_(runId, args, files);
   enqueueAgreementFinalizer_(runId, args);
   if (dispatched > 0) {
+    ensureAgreementFileWorkerTriggers_(Math.min(
+      Math.max(0, dispatched - 1),
+      Math.max(0, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM || 3) - 1)
+    ));
     processAgreementFileTaskBatch_(runId, "dispatcher-inline");
   } else {
     processAgreementFinalizerQueue_(runId, "dispatcher-inline");
@@ -279,7 +284,7 @@ function clearActiveDocGenerationJob_(runId, args) {
 function recoverActiveDocGenerationJob_(runId, active) {
   if (!active || !active.key) return;
   if (agreementFileTaskQueueHasItems_()) {
-    ensureAgreementFileWorkerTriggers_(1);
+    ensureAgreementFileWorkerTriggers_(getAvailableFileWorkerSlots_(runId));
     return;
   }
 
@@ -368,7 +373,6 @@ function requeueDocGenerationJobAfterFailure_(runId, args, err) {
 }
 
 function processNextAgreementFileTask() {
-  deleteTriggersForHandler_("processNextAgreementFileTask");
   const runId = makeRunId_();
   return processAgreementFileTaskBatch_(runId, "trigger");
 }
@@ -380,6 +384,16 @@ function processAgreementFileTaskBatch_(runId, source) {
   const results = [];
 
   while (results.length < maxItems && Date.now() - startedAt < maxRuntimeMs) {
+    const availableSlots = getAvailableFileWorkerSlots_(runId);
+    if (availableSlots <= 0) {
+      ensureAgreementFileWorkerTriggers_(1);
+      log_(runId, "INFO", "DOCGEN_FILE_WORKER_SLOTS_FULL", {
+        source: source || "",
+        inFlight: getInFlightFileTaskCount_(runId)
+      });
+      break;
+    }
+
     const task = dequeueAgreementFileTask_(runId);
     if (!task) {
       log_(runId, "INFO", "DOCGEN_FILE_TASK_QUEUE_EMPTY", {
@@ -394,12 +408,14 @@ function processAgreementFileTaskBatch_(runId, source) {
   }
 
   const hasMoreTasks = agreementFileTaskQueueHasItems_();
-  if (hasMoreTasks) ensureAgreementFileWorkerTriggers_(1);
-  if (!hasMoreTasks) processAgreementFinalizerQueue_(runId, "worker-inline");
+  const inFlightCount = getInFlightFileTaskCount_(runId);
+  if (hasMoreTasks) ensureAgreementFileWorkerTriggers_(getAvailableFileWorkerSlots_(runId));
+  if (!hasMoreTasks && inFlightCount === 0) processAgreementFinalizerQueue_(runId, "worker-inline");
   log_(runId, "INFO", "DOCGEN_FILE_TASK_BATCH_DONE", {
     source: source || "",
     processed: results.length,
-    remaining: readAgreementFileTaskQueue_(PropertiesService.getScriptProperties()).length
+    remaining: readAgreementFileTaskQueue_(PropertiesService.getScriptProperties()).length,
+    inFlight: inFlightCount
   });
 
   return { ok: results.every(result => result.ok !== false), processed: results.length, results: results };
@@ -407,6 +423,7 @@ function processAgreementFileTaskBatch_(runId, source) {
 
 function processSingleAgreementFileTaskWithGuards_(runId, task) {
   let claimKey = "";
+  let inFlightClaimed = false;
   try {
     const active = getActiveDocGenerationJob_(runId);
     if (active && docGenerationJobKey_(task) !== active.key) {
@@ -416,6 +433,15 @@ function processSingleAgreementFileTaskWithGuards_(runId, task) {
         activeKey: active.key
       });
       return { ok: true, waiting: true, agreementFileId: task.agreementFileId || "" };
+    }
+
+    inFlightClaimed = claimInFlightFileTask_(runId, task);
+    if (!inFlightClaimed) {
+      log_(runId, "INFO", "DOCGEN_FILE_TASK_ALREADY_IN_FLIGHT_SKIPPED", {
+        agreementFileId: task.agreementFileId || "",
+        jobId: task.jobId || ""
+      });
+      return { ok: true, duplicate: true, agreementFileId: task.agreementFileId || "" };
     }
 
     claimKey = claimAgreementFileTask_(runId, task);
@@ -432,6 +458,7 @@ function processSingleAgreementFileTaskWithGuards_(runId, task) {
     return { ok: false, agreementFileId: task.agreementFileId || "", error: String(err && err.message || err) };
   } finally {
     releaseDocGenerationJob_(claimKey);
+    if (inFlightClaimed) releaseInFlightFileTask_(runId, task);
   }
 }
 
@@ -531,6 +558,7 @@ function finalizeAgreementJobIfComplete_(runId, task) {
   const expected = items.length || files.length;
   const readyFileUpdates = [];
   const readyJobItemUpdates = [];
+  const inFlightCount = getInFlightFileTaskCount_(runId);
 
   files.forEach(fileRow => {
     const artifact = getGeneratedArtifactFromExistingRow_(fileRow);
@@ -539,19 +567,19 @@ function finalizeAgreementJobIfComplete_(runId, task) {
     readyJobItemUpdates.push(buildGenerationJobItemCreatedRow_(fileRow));
   });
 
-  if (!expected || readyFileUpdates.length < expected) {
+  if (!expected || readyFileUpdates.length < expected || inFlightCount > 0) {
     const missingFiles = files.filter(fileRow => !getGeneratedArtifactFromExistingRow_(fileRow));
     if (missingFiles.length) {
       const requeued = enqueueAgreementFileTasks_(runId, task, missingFiles);
       if (requeued > 0) {
-        ensureAgreementFileWorkerTriggers_(requeued);
-        processAgreementFileTaskBatch_(runId, "finalizer-recovery");
+        ensureAgreementFileWorkerTriggers_(getAvailableFileWorkerSlots_(runId));
       }
       log_(runId, "INFO", "DOCGEN_FINALIZER_REQUEUED_MISSING_FILE_TASKS", {
         jobId: jobId,
         onboardingId: onboardingId,
         missingFiles: missingFiles.length,
-        requeued: requeued
+        requeued: requeued,
+        inFlight: inFlightCount
       });
     }
 
@@ -563,6 +591,7 @@ function finalizeAgreementJobIfComplete_(runId, task) {
       onboardingId: onboardingId,
       expectedItems: expected,
       generatedFiles: readyFileUpdates.length,
+      inFlight: inFlightCount,
       retryCount: retryCount
     });
     task.finalizerRetryCount = retryCount;
@@ -597,9 +626,14 @@ function enqueueAgreementFileTasks_(runId, args, files) {
   try {
     const props = PropertiesService.getScriptProperties();
     const queue = readAgreementFileTaskQueue_(props);
+    const inFlight = cleanupExpiredInFlightFileTasks_(runId, readInFlightFileTasks_(props));
+    writeInFlightFileTasks_(props, inFlight);
     const queuedIds = {};
     queue.forEach(item => {
       if (item.agreementFileId) queuedIds[String(item.agreementFileId)] = true;
+    });
+    Object.keys(inFlight).forEach(fileId => {
+      queuedIds[fileId] = true;
     });
 
     let added = 0;
@@ -651,6 +685,95 @@ function writeAgreementFileTaskQueue_(props, queue) {
 
 function agreementFileTaskQueueHasItems_() {
   return readAgreementFileTaskQueue_(PropertiesService.getScriptProperties()).length > 0;
+}
+
+function getAvailableFileWorkerSlots_(runId) {
+  const parallelism = Math.max(1, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM || 1));
+  return Math.max(0, parallelism - getInFlightFileTaskCount_(runId));
+}
+
+function getInFlightFileTaskCount_(runId) {
+  const props = PropertiesService.getScriptProperties();
+  const inFlight = cleanupExpiredInFlightFileTasks_(runId, readInFlightFileTasks_(props));
+  writeInFlightFileTasks_(props, inFlight);
+  return Object.keys(inFlight).length;
+}
+
+function claimInFlightFileTask_(runId, task) {
+  const fileId = String(task && task.agreementFileId || "").trim();
+  if (!fileId) return false;
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const inFlight = cleanupExpiredInFlightFileTasks_(runId, readInFlightFileTasks_(props));
+    if (inFlight[fileId]) {
+      writeInFlightFileTasks_(props, inFlight);
+      return false;
+    }
+    inFlight[fileId] = {
+      agreementFileId: fileId,
+      jobId: task.jobId || "",
+      onboardingId: task.onboardingId || "",
+      startedAt: new Date().toISOString()
+    };
+    writeInFlightFileTasks_(props, inFlight);
+    log_(runId, "INFO", "DOCGEN_FILE_IN_FLIGHT_CLAIMED", {
+      agreementFileId: fileId,
+      inFlight: Object.keys(inFlight).length
+    });
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function releaseInFlightFileTask_(runId, task) {
+  const fileId = String(task && task.agreementFileId || "").trim();
+  if (!fileId) return;
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const inFlight = readInFlightFileTasks_(props);
+    delete inFlight[fileId];
+    writeInFlightFileTasks_(props, inFlight);
+    log_(runId, "INFO", "DOCGEN_FILE_IN_FLIGHT_RELEASED", {
+      agreementFileId: fileId,
+      inFlight: Object.keys(inFlight).length
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function readInFlightFileTasks_(props) {
+  return safeJsonParse_(props.getProperty(CONFIG.DOC_GENERATOR.FILE_IN_FLIGHT_KEY)) || {};
+}
+
+function writeInFlightFileTasks_(props, inFlight) {
+  props.setProperty(CONFIG.DOC_GENERATOR.FILE_IN_FLIGHT_KEY, JSON.stringify(inFlight || {}));
+}
+
+function cleanupExpiredInFlightFileTasks_(runId, inFlight) {
+  const ttlMs = Math.max(60, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_LEASE_TTL_SECONDS || 900)) * 1000;
+  const now = Date.now();
+  const out = {};
+  Object.keys(inFlight || {}).forEach(fileId => {
+    const item = inFlight[fileId] || {};
+    const startedAt = new Date(item.startedAt || 0).getTime();
+    if (!startedAt || now - startedAt > ttlMs) {
+      log_(runId, "WARN", "DOCGEN_FILE_IN_FLIGHT_EXPIRED", {
+        agreementFileId: fileId,
+        jobId: item.jobId || ""
+      });
+      return;
+    }
+    out[fileId] = item;
+  });
+  return out;
 }
 
 function claimAgreementFileTask_(runId, task) {
@@ -799,8 +922,8 @@ function ensureDocGenerationQueueTrigger() {
 function ensureAgreementFileWorkerTriggers_(taskCount) {
   const handler = "processNextAgreementFileTask";
   const parallelism = Math.max(1, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM || 2));
-  const count = Math.min(Math.max(1, Number(taskCount || 1)), parallelism);
-  if (countTriggersForHandler_(handler) > 0) return;
+  const existing = countTriggersForHandler_(handler);
+  const count = Math.min(Math.max(0, Number(taskCount || 0)), Math.max(0, parallelism - existing));
   for (let i = 0; i < count; i++) {
     ScriptApp.newTrigger(handler).timeBased().after(1).create();
   }
