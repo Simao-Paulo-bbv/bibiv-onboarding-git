@@ -2,11 +2,13 @@
  *  Build payload from DEST
  *  ========================= */
 function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
-  const row = dest.getRange(rowNum, 1, 1, DEST_SCHEMA.length).getValues()[0];
+  const headers = getHeaderRow_(dest);
+  const row = dest.getRange(rowNum, 1, 1, headers.length).getValues()[0];
   const payload = {};
 
-  for (let i = 0; i < DEST_SCHEMA.length; i++) {
-    const col = DEST_SCHEMA[i];
+  for (let i = 0; i < headers.length; i++) {
+    const col = String(headers[i] || "").trim();
+    if (!col) continue;
     payload[col] = normalizeForAppSheet_(col, row[i]);
   }
 
@@ -25,12 +27,15 @@ function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
     payload["numer telefonu osoby kontaktowej"] = phone || "";
   }
 
-  // AppSheet MAIN requires accountNumbers (EnumList).
-  // When MF is temporarily unavailable (e.g. 429), fallback to form field.
-  payload["accountNumbers"] = normalizeAccountNumbersForPayload_(
-    payload["accountNumbers"],
-    payload["numer rachunku bankowego"]
-  );
+  // AppSheet MAIN requires accountNumbers (EnumList) for standard VAT flow.
+  // For NOT VAT records keep accountNumbers as-is (expected empty).
+  const isNotVatStatus = String(payload["statusVat"] || "").trim().toLowerCase() === "not vat";
+  payload["accountNumbers"] = isNotVatStatus
+    ? normalizeAccountNumbersCsv_(payload["accountNumbers"])
+    : normalizeAccountNumbersForPayload_(
+        payload["accountNumbers"],
+        payload["numer rachunku bankowego"]
+      );
 
 
   // Url columns (AppSheet "Url" type):

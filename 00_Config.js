@@ -22,6 +22,12 @@ const CONFIG = {
   MAX_APPSHEET_LOG_BODY_CHARS: 8000,
   PENDING_SCAN_LAST_N: 5000, // for huge sheets: scan only last N rows for pending processing
 
+  // Existing-row backfill (missing fields only; does NOT touch Status / AppSheet actions)
+  BACKFILL_EXISTING_ENABLED: false, // OFF after one-off backfill
+  BACKFILL_EXISTING_MAX_ROWS_PER_RUN: 20,
+  BACKFILL_EXISTING_SCAN_LAST_N: 5000,
+  BACKFILL_EXISTING_USE_IBAN_API: true,
+
 
   FEATURES: {
     ENFORCE_DEST_HEADERS: true,
@@ -178,6 +184,10 @@ const APPSHEET_SCHEMA = [
   "residenceAddress",
   "accountNumbers",
   "Is_Generating_Now",
+  "Generation_Requested_By",
+  "Generation_Queued_At",
+  "Generation_Started_At",
+  "Generation_Finished_At",
   "Generation_Triggered_By",
   "sync_status",
   "submitted on",
@@ -216,6 +226,10 @@ const APPSHEET_SCHEMA = [
   "Bank name",
   "Bank address",
   "Bank city",
+  // NEW: sales representative fields from source (append-only to avoid shifting)
+  "imię i nazwisko przedstawiciela handlowego",
+  "pesel przedstawiciela handlowego",
+  "numer telefonu przedstawiciela handlowego",
 ];
 
 const DEST_SCHEMA = APPSHEET_SCHEMA.filter(h => h !== "_RowNumber");
@@ -226,6 +240,10 @@ const SYSTEM_DEFAULTS = {
   "Documents sent to client": "",
   "Documents sent to bank": "",
   "Is_Generating_Now": "",
+  "Generation_Requested_By": "",
+  "Generation_Queued_At": "",
+  "Generation_Started_At": "",
+  "Generation_Finished_At": "",
   "Generation_Triggered_By": "",
   "name_api": "",
   "statusVat": "",
@@ -239,6 +257,9 @@ const SYSTEM_DEFAULTS = {
   "Bank name": "",
   "Bank address": "",
   "Bank city": "",
+  "imię i nazwisko przedstawiciela handlowego": "",
+  "pesel przedstawiciela handlowego": "",
+  "numer telefonu przedstawiciela handlowego": "",
   "sync_status": "",
 };
 
@@ -267,6 +288,10 @@ const APPSHEET_MAIN_ALLOWED_COLS = [
   "residenceAddress",
   "accountNumbers",
   "Is_Generating_Now",
+  "Generation_Requested_By",
+  "Generation_Queued_At",
+  "Generation_Started_At",
+  "Generation_Finished_At",
   "Generation_Triggered_By",
   "sync_status",
   "submitted on",
@@ -305,4 +330,8 @@ const APPSHEET_MAIN_ALLOWED_COLS = [
   "Bank name",
   "Bank address",
   "Bank city",
+  // NEW sales representative fields (appended at the end)
+  "imię i nazwisko przedstawiciela handlowego",
+  "pesel przedstawiciela handlowego",
+  "numer telefonu przedstawiciela handlowego",
 ];

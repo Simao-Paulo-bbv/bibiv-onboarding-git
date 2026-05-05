@@ -1,13 +1,61 @@
 /** =========================
- *  GOV APIs (VAT + REGON + IBAN)
+ *  GOV APIs (REGON + VAT + IBAN)
  *  ========================= */
 function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
-  const nipClean = String(nip || "").trim();
+  const nipClean = normalizeNipForApi_(nip);
   const govBase = String((CONFIG && CONFIG.GOV_API_BASE_URL) || "").trim();
   const govKey = String((CONFIG && CONFIG.GOV_API_KEY) || "").trim();
   const hasGovConfig = govBase !== "" && govKey !== "";
 
-  // --- 1) VAT ---
+  const companyNameIdx = (mapping && mapping.dstIndex) ? mapping.dstIndex["nazwa firmy"] : null;
+  const companyNameFromRow = companyNameIdx != null
+    ? String(dest.getRange(rowNum, companyNameIdx + 1).getValue() || "").trim()
+    : "";
+
+  // --- 1) REGON (by NIP) ---
+  let nameFromRegon = "";
+  let regonFromRegon = "";
+  let residenceFromRegon = "";
+  let regonHttpCode = 0;
+  if (hasGovConfig) {
+    try {
+      log_(runId, "INFO", "GOV_REGON_CALL", { rowNum, nip: nipClean });
+      const regonRes = fetchGovApiGet_(CONFIG.GOV_REGON_PATH, { nip: nipClean });
+      regonHttpCode = regonRes.httpCode;
+      if (regonRes.httpCode === 200) {
+        nameFromRegon = pickNameFromRegon_(regonRes.parsed, "", nipClean);
+        regonFromRegon = pickRegonFromRegon_(regonRes.parsed, "", nipClean);
+        residenceFromRegon = pickResidenceAddressFromRegon_(regonRes.parsed, "", nipClean);
+        log_(runId, "INFO", "GOV_REGON_OK", {
+          rowNum,
+          nip: nipClean,
+          hasName: !!nameFromRegon,
+          hasRegon: !!regonFromRegon,
+          hasResidenceAddress: !!residenceFromRegon
+        });
+      } else {
+        log_(runId, "WARN", "GOV_REGON_HTTP", { rowNum, httpCode: regonRes.httpCode, nip: nipClean });
+      }
+    } catch (e) {
+      log_(runId, "WARN", "GOV_REGON_FETCH_ERROR", { rowNum, nip: nipClean, err: String(e).slice(0, 400) });
+      return { ok: false, httpCode: 0, rateLimited: false, reason: "REGON_FETCH_ERROR" };
+    }
+  }
+
+  // REGON is mandatory step #1 for every record.
+  // If REGON fails or returns no data for NIP, stop processing this row.
+  if (hasGovConfig) {
+    if (regonHttpCode !== 200) {
+      return { ok: false, httpCode: regonHttpCode, rateLimited: false, reason: "REGON_HTTP_" + String(regonHttpCode || 0) };
+    }
+    const hasAnyRegonData = !!(nameFromRegon || regonFromRegon || residenceFromRegon);
+    if (!hasAnyRegonData) {
+      log_(runId, "WARN", "GOV_REGON_NO_DATA", { rowNum, nip: nipClean });
+      return { ok: false, httpCode: 200, rateLimited: false, reason: "REGON_NO_DATA" };
+    }
+  }
+
+  // --- 2) VAT ---
   log_(runId, "INFO", "MF_CALL", { rowNum });
   let vatHttpCode = 0;
   let vatBody = "";
@@ -24,7 +72,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
       vatParsed = vatRes.parsed;
     } catch (e) {
       log_(runId, "WARN", "MF_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
-      return { ok: false, httpCode: 0, rateLimited: false, reason: "FETCH_ERROR" };
+      return { ok: false, httpCode: 0, rateLimited: false, reason: "VAT_FETCH_ERROR" };
     }
   } else {
     // Rollback path: legacy MF VAT API (direct/relay) when GOV config is not available.
@@ -51,12 +99,14 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
       vatParsed = safeJsonParse_(vatBody);
     } catch (e) {
       log_(runId, "WARN", "MF_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
-      return { ok: false, httpCode: 0, rateLimited: false, reason: "FETCH_ERROR" };
+      return { ok: false, httpCode: 0, rateLimited: false, reason: "VAT_FETCH_ERROR" };
     }
   }
 
   let subj = null;
+  let vatHasRecognizedSubjectField = false;
   if (vatHttpCode === 200) subj = pickSubjectFromMf_(vatParsed);
+  if (vatHttpCode === 200) vatHasRecognizedSubjectField = hasRecognizedVatSubjectField_(vatParsed);
 
   // Retry strategy for GOV VAT when subject is null:
   // 1) retry with today's date
@@ -74,6 +124,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
           vatBody = retryToday.body;
           vatParsed = retryToday.parsed;
           subj = pickSubjectFromMf_(vatParsed);
+          vatHasRecognizedSubjectField = hasRecognizedVatSubjectField_(vatParsed);
         }
       } catch (e) {
         log_(runId, "WARN", "MF_RETRY_TODAY_FAIL", { rowNum, err: String(e).slice(0, 300) });
@@ -89,6 +140,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
           vatBody = retryNoDate.body;
           vatParsed = retryNoDate.parsed;
           subj = pickSubjectFromMf_(vatParsed);
+          vatHasRecognizedSubjectField = hasRecognizedVatSubjectField_(vatParsed);
         }
       } catch (e) {
         log_(runId, "WARN", "MF_RETRY_NODATE_FAIL", { rowNum, err: String(e).slice(0, 300) });
@@ -98,7 +150,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
 
   // Additional fallback for missing/incomplete VAT subject data:
   // try legacy MF path (relay/direct) and merge missing fields.
-  if (hasGovConfig && (!subj || !isMfSubjectCompleteForMain_(subj))) {
+  if (hasGovConfig && ((subj && !isMfSubjectCompleteForMain_(subj)) || (!subj && !vatHasRecognizedSubjectField))) {
     const legacyFallback = fetchLegacyMfSubjectWithFallback_(runId, rowNum, nipClean, String(dateStr || "").trim());
     if (legacyFallback.subject) {
       if (!subj) {
@@ -128,13 +180,23 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   if (vatHttpCode !== 200) {
     const bodyStr = String(vatBody || "");
     const rateLimited = vatHttpCode === 429 || bodyStr.indexOf("WL-191") >= 0;
-    return { ok: false, httpCode: vatHttpCode, rateLimited, reason: rateLimited ? "RATE_LIMIT" : "HTTP_" + String(vatHttpCode) };
+    return { ok: false, httpCode: vatHttpCode, rateLimited, reason: rateLimited ? "RATE_LIMIT" : "VAT_HTTP_" + String(vatHttpCode) };
+  }
+
+  if (!subj && !vatHasRecognizedSubjectField) {
+    log_(runId, "WARN", "MF_VAT_UNEXPECTED_RESPONSE", {
+      rowNum,
+      httpCode: vatHttpCode,
+      bodySnippet: String(vatBody || "").slice(0, 500)
+    });
+    return { ok: false, httpCode: vatHttpCode, rateLimited: false, reason: "VAT_UNEXPECTED_RESPONSE" };
   }
 
   let acc = [];
+  let isNotVat = false;
   if (subj) {
     writeIfColExists_(dest, mapping, rowNum, "statusVat", subj.statusVat || "");
-    writeIfColExists_(dest, mapping, rowNum, "regon", String(subj.regon || ""));
+    writeIfColExists_(dest, mapping, rowNum, "regon", String(subj.regon || regonFromRegon || ""));
     writeIfColExists_(dest, mapping, rowNum, "krs", String(subj.krs || ""));
     writeIfColExists_(dest, mapping, rowNum, "registrationLegalDate", subj.registrationLegalDate || "");
     writeIfColExists_(dest, mapping, rowNum, "workingAddress", subj.workingAddress || "");
@@ -146,27 +208,24 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     writeIfColExists_(dest, mapping, rowNum, "accountNumbers", acc.join(","));
   } else {
     log_(runId, "WARN", "MF_NO_SUBJECT", { rowNum });
+    isNotVat = true;
+    writeIfColExists_(dest, mapping, rowNum, "statusVat", "Not VAT");
+    if (regonFromRegon) writeIfColExists_(dest, mapping, rowNum, "regon", String(regonFromRegon || ""));
+    writeIfColExists_(dest, mapping, rowNum, "registrationLegalDate", "");
+    writeIfColExists_(dest, mapping, rowNum, "workingAddress", "");
+    writeIfColExists_(dest, mapping, rowNum, "accountNumbers", "");
+    writeIfColExists_(dest, mapping, rowNum, "residenceAddress", residenceFromRegon || "");
+    log_(runId, "INFO", "MF_NOT_VAT", { rowNum, nip: nipClean });
   }
 
-  // --- 2) REGON (name_api <- Nazwa) ---
-  let nameFromRegon = "";
-  let regonFromRegon = "";
-  if (hasGovConfig) {
-    try {
-      const regonRes = fetchGovApiGet_(CONFIG.GOV_REGON_PATH, { nip: nipClean });
-      if (regonRes.httpCode === 200) {
-        nameFromRegon = pickNameFromRegon_(regonRes.parsed, nipClean);
-        regonFromRegon = pickRegonFromRegon_(regonRes.parsed, nipClean);
-      } else {
-        log_(runId, "WARN", "GOV_REGON_HTTP", { rowNum, httpCode: regonRes.httpCode });
-      }
-    } catch (e) {
-      log_(runId, "WARN", "GOV_REGON_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
-    }
+  if (nameFromRegon) {
+    writeIfColExists_(dest, mapping, rowNum, "name_api", nameFromRegon);
+  } else if (subj) {
+    writeIfColExists_(dest, mapping, rowNum, "name_api", subj.name || "");
+  } else if (companyNameFromRow) {
+    // NOT VAT fallback to source company name to avoid blocking downstream Add.
+    writeIfColExists_(dest, mapping, rowNum, "name_api", companyNameFromRow);
   }
-
-  if (nameFromRegon) writeIfColExists_(dest, mapping, rowNum, "name_api", nameFromRegon);
-  else if (subj) writeIfColExists_(dest, mapping, rowNum, "name_api", subj.name || "");
   if (regonFromRegon && (!subj || !String(subj.regon || "").trim())) {
     writeIfColExists_(dest, mapping, rowNum, "regon", String(regonFromRegon || ""));
   }
@@ -176,25 +235,52 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   if (hasGovConfig) {
     const mainAccount = getMainBankAccountForIban_(dest, mapping, rowNum);
     if (mainAccount) {
-      try {
-        const ibanRes = fetchGovApiGet_(CONFIG.GOV_IBAN_PATH, {
-          country_code: "PL",
-          account_number: mainAccount
+      if (hasCompleteIbanMetadata_(dest, mapping, rowNum)) {
+        log_(runId, "INFO", "GOV_IBAN_SKIP_ALREADY_PRESENT", {
+          rowNum,
+          accountLast4: mainAccount.slice(-4)
         });
-        if (ibanRes.httpCode === 200) {
-          const bankMeta = pickBankMetaFromIban_(ibanRes.parsed);
-          // Keep legacy field for backward compatibility.
-          writeIfColExists_(dest, mapping, rowNum, "kod swift banku", bankMeta.bic || "");
-          // New bank metadata fields.
-          writeIfColExists_(dest, mapping, rowNum, "swift/bic", bankMeta.bic || "");
-          writeIfColExists_(dest, mapping, rowNum, "Bank name", bankMeta.bankName || "");
-          writeIfColExists_(dest, mapping, rowNum, "Bank address", bankMeta.address || "");
-          writeIfColExists_(dest, mapping, rowNum, "Bank city", bankMeta.city || "");
+      } else {
+        const cachedBankMeta = getCachedIbanMeta_(mainAccount);
+        if (cachedBankMeta && hasAnyIbanMeta_(cachedBankMeta)) {
+          writeBankMetaToRow_(dest, mapping, rowNum, cachedBankMeta);
+          log_(runId, "INFO", "GOV_IBAN_CACHE_HIT", {
+            rowNum,
+            accountLast4: mainAccount.slice(-4),
+            hasBic: !!cachedBankMeta.bic,
+            hasBankName: !!cachedBankMeta.bankName,
+            hasAddress: !!cachedBankMeta.address,
+            hasCity: !!cachedBankMeta.city
+          });
         } else {
-          log_(runId, "WARN", "GOV_IBAN_HTTP", { rowNum, httpCode: ibanRes.httpCode });
+          try {
+            log_(runId, "INFO", "GOV_IBAN_CALL", {
+              rowNum,
+              countryCode: "PL",
+              accountLast4: mainAccount.slice(-4)
+            });
+            const ibanRes = fetchGovApiGet_(CONFIG.GOV_IBAN_PATH, {
+              country_code: "PL",
+              account_number: mainAccount
+            });
+            if (ibanRes.httpCode === 200) {
+              const bankMeta = pickBankMetaFromIban_(ibanRes.parsed);
+              writeBankMetaToRow_(dest, mapping, rowNum, bankMeta);
+              putCachedIbanMeta_(mainAccount, bankMeta);
+              log_(runId, "INFO", "GOV_IBAN_OK", {
+                rowNum,
+                hasBic: !!bankMeta.bic,
+                hasBankName: !!bankMeta.bankName,
+                hasAddress: !!bankMeta.address,
+                hasCity: !!bankMeta.city
+              });
+            } else {
+              log_(runId, "WARN", "GOV_IBAN_HTTP", { rowNum, httpCode: ibanRes.httpCode });
+            }
+          } catch (e) {
+            log_(runId, "WARN", "GOV_IBAN_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
+          }
         }
-      } catch (e) {
-        log_(runId, "WARN", "GOV_IBAN_FETCH_ERROR", { rowNum, err: String(e).slice(0, 400) });
       }
     } else {
       log_(runId, "INFO", "GOV_IBAN_SKIP_NO_MAIN_ACCOUNT", { rowNum });
@@ -204,8 +290,8 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   const nipControlIdx = mapping.destKey.nipControlIdx;
   if (nipControlIdx != null) dest.getRange(rowNum, nipControlIdx + 1).setValue(nipClean);
 
-  return subj
-    ? { ok: true, httpCode: vatHttpCode, rateLimited: false, reason: "OK" }
+  return subj || isNotVat
+    ? { ok: true, httpCode: vatHttpCode, rateLimited: false, reason: (isNotVat ? "NOT_VAT" : "OK") }
     : { ok: false, httpCode: vatHttpCode, rateLimited: false, reason: "NO_SUBJECT" };
 }
 
@@ -222,6 +308,22 @@ function pickSubjectFromMf_(parsed) {
     return null;
   } catch (e) {
     return null;
+  }
+}
+
+function hasRecognizedVatSubjectField_(parsed) {
+  try {
+    if (parsed && parsed.data && parsed.data.result && Object.prototype.hasOwnProperty.call(parsed.data.result, "subject")) {
+      return true;
+    }
+    if (parsed && parsed.result && Object.prototype.hasOwnProperty.call(parsed.result, "subject")) {
+      return true;
+    }
+    const entries = parsed && parsed.result && parsed.result.entries;
+    if (Array.isArray(entries)) return true;
+    return false;
+  } catch (e) {
+    return false;
   }
 }
 
@@ -256,7 +358,7 @@ function fetchGovApiGet_(path, query) {
   return { httpCode: res.getResponseCode(), body: body, parsed: safeJsonParse_(body) };
 }
 
-function pickNameFromRegon_(parsed, nipClean) {
+function pickNameFromRegon_(parsed, regonClean, nipClean) {
   try {
     const rows =
       (parsed && parsed.results) ||
@@ -265,7 +367,8 @@ function pickNameFromRegon_(parsed, nipClean) {
       [];
     if (!rows || !rows.length) return "";
 
-    const targetNip = String(nipClean || "").trim();
+    const targetRegon = normalizeRegonQueryValue_(regonClean);
+    const targetNip = normalizeNipForApi_(nipClean);
     let best = null;
 
     for (let i = 0; i < rows.length; i++) {
@@ -273,10 +376,13 @@ function pickNameFromRegon_(parsed, nipClean) {
       const name = String(r.Nazwa || r.name || "").trim();
       if (!name) continue;
 
-      const rNip = String(r.Nip || r.nip || "").trim();
+      const rRegon = normalizeRegonQueryValue_(r.Regon || r.regon);
+      const rNip = normalizeNipForApi_(r.Nip || r.nip);
       const typ = String(r.Typ || r.typ || "").trim().toUpperCase();
       const score =
-        (rNip && targetNip && rNip === targetNip ? 100 : 0) +
+        (rRegon && targetRegon && rRegon === targetRegon ? 200 : 0) +
+        (rNip && targetNip && rNip === targetNip ? 120 : 0) +
+        (rRegon ? 2 : 0) +
         (typ === "P" ? 10 : 0) +
         (typ === "LP" ? 5 : 0);
 
@@ -289,7 +395,7 @@ function pickNameFromRegon_(parsed, nipClean) {
   }
 }
 
-function pickRegonFromRegon_(parsed, nipClean) {
+function pickRegonFromRegon_(parsed, regonClean, nipClean) {
   try {
     const rows =
       (parsed && parsed.results) ||
@@ -298,18 +404,22 @@ function pickRegonFromRegon_(parsed, nipClean) {
       [];
     if (!rows || !rows.length) return "";
 
-    const targetNip = String(nipClean || "").trim();
+    const targetRegon = normalizeRegonQueryValue_(regonClean);
+    const targetNip = normalizeNipForApi_(nipClean);
     let best = null;
 
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i] || {};
-      const reg = String(r.Regon || r.regon || "").trim();
+      const reg = normalizeRegonQueryValue_(r.Regon || r.regon);
       if (!reg) continue;
 
-      const rNip = String(r.Nip || r.nip || "").trim();
+      const rRegon = normalizeRegonQueryValue_(r.Regon || r.regon);
+      const rNip = normalizeNipForApi_(r.Nip || r.nip);
       const typ = String(r.Typ || r.typ || "").trim().toUpperCase();
       const score =
-        (rNip && targetNip && rNip === targetNip ? 100 : 0) +
+        (rRegon && targetRegon && rRegon === targetRegon ? 200 : 0) +
+        (rNip && targetNip && rNip === targetNip ? 120 : 0) +
+        (rRegon ? 2 : 0) +
         (typ === "P" ? 10 : 0) +
         (typ === "LP" ? 5 : 0);
 
@@ -322,6 +432,52 @@ function pickRegonFromRegon_(parsed, nipClean) {
   }
 }
 
+function pickResidenceAddressFromRegon_(parsed, regonClean, nipClean) {
+  try {
+    const rows =
+      (parsed && parsed.results) ||
+      (parsed && parsed.data && parsed.data.results) ||
+      (parsed && parsed.data && Array.isArray(parsed.data) ? parsed.data : null) ||
+      [];
+    if (!rows || !rows.length) return "";
+
+    const targetRegon = normalizeRegonQueryValue_(regonClean);
+    const targetNip = normalizeNipForApi_(nipClean);
+    let best = null;
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i] || {};
+      const rRegon = normalizeRegonQueryValue_(r.Regon || r.regon);
+      const rNip = normalizeNipForApi_(r.Nip || r.nip);
+      const typ = String(r.Typ || r.typ || "").trim().toUpperCase();
+      const score =
+        (rRegon && targetRegon && rRegon === targetRegon ? 200 : 0) +
+        (rNip && targetNip && rNip === targetNip ? 120 : 0) +
+        (rRegon ? 2 : 0) +
+        (typ === "P" ? 10 : 0) +
+        (typ === "LP" ? 5 : 0);
+      if (!best || score > best.score) best = { score: score, row: r };
+    }
+
+    if (!best || !best.row) return "";
+    const row = best.row || {};
+    const ulica = String(row.Ulica || row.ulica || "").trim();
+    const nrNier = String(row.NrNieruchomosci || row.nrNieruchomosci || "").trim();
+    const nrLok = String(row.NrLokalu || row.nrLokalu || "").trim();
+    const kod = String(row.KodPocztowy || row.kodPocztowy || "").trim();
+    const miejsc = String(row.Miejscowosc || row.miejscowosc || "").trim();
+
+    // Requested format:
+    // "Ulica" + " " + "NrNieruchomosci" + " " + "NrNieruchomosci" + "/" + "NrLokalu" + "," + "KodPocztowy" + " " + "Miejscowosc"
+    const nr2 = nrNier && nrLok ? (nrNier + "/" + nrLok) : (nrNier || (nrLok ? ("/" + nrLok) : ""));
+    const streetPart = [ulica, nrNier, nr2].filter(Boolean).join(" ").trim();
+    const cityPart = [kod, miejsc].filter(Boolean).join(" ").trim();
+    return [streetPart, cityPart].filter(Boolean).join(", ").trim();
+  } catch (e) {
+    return "";
+  }
+}
+
 function pickFirstAccountNumber_(accounts) {
   if (!accounts || !accounts.length) return "";
   for (let i = 0; i < accounts.length; i++) {
@@ -329,6 +485,19 @@ function pickFirstAccountNumber_(accounts) {
     if (normalized) return normalized;
   }
   return "";
+}
+
+function normalizeRegonQueryValue_(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  if (!raw) return "";
+  return raw.replace(/[^\d]/g, "");
+}
+
+function normalizeNipForApi_(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  if (!raw) return "";
+  const digits = raw.replace(/[^\d]/g, "");
+  return digits || raw;
 }
 
 function getMainBankAccountForIban_(dest, mapping, rowNum) {
@@ -363,6 +532,86 @@ function pickBankMetaFromIban_(parsed) {
     out.city = String(bank.city || data.city || "").trim();
   } catch (e) {}
   return out;
+}
+
+function hasCompleteIbanMetadata_(dest, mapping, rowNum) {
+  const meta = getExistingIbanMetadata_(dest, mapping, rowNum);
+  return !!(meta.bic && meta.bankName && meta.address && meta.city);
+}
+
+function getExistingIbanMetadata_(dest, mapping, rowNum) {
+  function getCol(colName) {
+    try {
+      const idx = mapping && mapping.dstIndex ? mapping.dstIndex[colName] : null;
+      if (idx == null) return "";
+      return String(dest.getRange(rowNum, idx + 1).getValue() || "").trim();
+    } catch (e) {
+      return "";
+    }
+  }
+  const swiftBic = getCol("swift/bic");
+  const legacySwift = getCol("kod swift banku");
+  return {
+    bic: swiftBic || legacySwift,
+    bankName: getCol("Bank name"),
+    address: getCol("Bank address"),
+    city: getCol("Bank city")
+  };
+}
+
+function hasAnyIbanMeta_(meta) {
+  if (!meta) return false;
+  return !!(
+    String(meta.bic || "").trim() ||
+    String(meta.bankName || "").trim() ||
+    String(meta.address || "").trim() ||
+    String(meta.city || "").trim()
+  );
+}
+
+function writeBankMetaToRow_(dest, mapping, rowNum, bankMeta) {
+  const meta = bankMeta || {};
+  const bic = String(meta.bic || "").trim();
+  const bankName = String(meta.bankName || "").trim();
+  const address = String(meta.address || "").trim();
+  const city = String(meta.city || "").trim();
+
+  if (bic) {
+    writeIfColExists_(dest, mapping, rowNum, "kod swift banku", bic);
+    writeIfColExists_(dest, mapping, rowNum, "swift/bic", bic);
+  }
+  if (bankName) writeIfColExists_(dest, mapping, rowNum, "Bank name", bankName);
+  if (address) writeIfColExists_(dest, mapping, rowNum, "Bank address", address);
+  if (city) writeIfColExists_(dest, mapping, rowNum, "Bank city", city);
+}
+
+function getCachedIbanMeta_(accountNumber) {
+  try {
+    const key = buildIbanCacheKey_(accountNumber);
+    if (!key) return null;
+    const cached = CacheService.getScriptCache().get(key);
+    if (!cached) return null;
+    return safeJsonParse_(cached);
+  } catch (e) {
+    return null;
+  }
+}
+
+function putCachedIbanMeta_(accountNumber, bankMeta) {
+  try {
+    if (!hasAnyIbanMeta_(bankMeta)) return;
+    const key = buildIbanCacheKey_(accountNumber);
+    if (!key) return;
+    CacheService.getScriptCache().put(key, JSON.stringify(bankMeta || {}), 21600);
+  } catch (e) {
+    // cache is only an optimization
+  }
+}
+
+function buildIbanCacheKey_(accountNumber) {
+  const normalized = normalizeBankAccountForIban_(accountNumber);
+  if (!normalized) return "";
+  return "iban_meta:" + normalized;
 }
 
 function safeDateForMf_(submittedOn) {

@@ -21,6 +21,7 @@
 
 const BANK_ACCOUNTS_SHEET_NAME_DEFAULT = "Bank_Accounts";
 const BANK_ACCOUNTS_HEADERS = ["AccountID", "Onboarding_ID", "AccountNumber", "CreatedAt"];
+const BANK_ACCOUNTS_RUNTIME_CACHE = {};
 
 /**
  * Hook: wołaj z 04_Process.gs dla każdego rekordu, np. tuż przed wysłaniem do AppSheet.
@@ -105,8 +106,6 @@ function parseAccountCsv_(csvRaw) {
  * - jeśli różne -> usuwa stare i dodaje nowe
  */
 function replaceBankAccountsForOnboarding_(runId, bankSheet, onboardingId, accounts, rowNum) {
-  enforceBankAccountsHeadersAndFormats_(bankSheet);
-
   const existing = readExistingAccountsForOnboarding_(bankSheet, onboardingId);
 
   if (arraysEqual_(existing, accounts)) {
@@ -132,43 +131,27 @@ function replaceBankAccountsForOnboarding_(runId, bankSheet, onboardingId, accou
   ]);
 
   bankSheet.getRange(bankSheet.getLastRow() + 1, 1, rows.length, BANK_ACCOUNTS_HEADERS.length).setValues(rows);
-  SpreadsheetApp.flush();
+  invalidateBankAccountsCache_(bankSheet);
 
   log_(runId, "INFO", "BANK_ACCOUNTS_UPSERT_OK", { rowNum, onboardingId, inserted: rows.length, prev: existing.length });
 }
 
 function readExistingAccountsForOnboarding_(bankSheet, onboardingId) {
-  const lastRow = bankSheet.getLastRow();
-  if (lastRow < 2) return [];
-
-  const data = bankSheet.getRange(2, 1, lastRow - 1, BANK_ACCOUNTS_HEADERS.length).getValues();
-  const out = [];
-
-  for (let i = 0; i < data.length; i++) {
-    if (String(data[i][1] || "").trim() === onboardingId) {
-      const acc = String(data[i][2] || "").trim();
-      if (acc) out.push(acc);
-    }
-  }
-  return out;
+  const index = getBankAccountsCache_(bankSheet);
+  const node = index.byOnboarding[String(onboardingId || "").trim()];
+  if (!node || !node.accounts) return [];
+  return node.accounts.slice();
 }
 
 function deleteAccountsForOnboarding_(runId, bankSheet, onboardingId, rowNum) {
-  const lastRow = bankSheet.getLastRow();
-  if (lastRow < 2) return;
-
-  const data = bankSheet.getRange(2, 1, lastRow - 1, BANK_ACCOUNTS_HEADERS.length).getValues();
-  const rowsToDelete = [];
-
-  for (let i = 0; i < data.length; i++) {
-    if (String(data[i][1] || "").trim() === onboardingId) {
-      rowsToDelete.push(i + 2);
-    }
-  }
+  const index = getBankAccountsCache_(bankSheet);
+  const node = index.byOnboarding[String(onboardingId || "").trim()];
+  const rowsToDelete = node && node.rows ? node.rows.slice() : [];
 
   for (let i = rowsToDelete.length - 1; i >= 0; i--) {
     bankSheet.deleteRow(rowsToDelete[i]);
   }
+  if (rowsToDelete.length) invalidateBankAccountsCache_(bankSheet);
 
   if (rowsToDelete.length) {
     log_(runId, "INFO", "BANK_ACCOUNTS_CLEARED", { rowNum, onboardingId, deleted: rowsToDelete.length });
@@ -190,10 +173,10 @@ function getOrCreateBankAccountsSheet_(runId, ss, sheetName) {
   if (!sh) {
     sh = ss.insertSheet(sheetName);
     sh.getRange(1, 1, 1, BANK_ACCOUNTS_HEADERS.length).setValues([BANK_ACCOUNTS_HEADERS]);
-    enforceBankAccountsHeadersAndFormats_(sh);
+    enforceBankAccountsHeadersAndFormats_(sh, true);
     log_(runId, "INFO", "BANK_ACCOUNTS_SHEET_CREATED", { sheetName });
   } else {
-    enforceBankAccountsHeadersAndFormats_(sh);
+    enforceBankAccountsHeadersAndFormats_(sh, false);
   }
   return sh;
 }
@@ -203,7 +186,7 @@ function getOrCreateBankAccountsSheet_(runId, ss, sheetName) {
  * "Please make a selection within a single column to perform column level actions."
  * Formatujemy kolumny pojedynczo.
  */
-function enforceBankAccountsHeadersAndFormats_(sheet) {
+function enforceBankAccountsHeadersAndFormats_(sheet, forceFormats) {
   const header = sheet
     .getRange(1, 1, 1, BANK_ACCOUNTS_HEADERS.length)
     .getValues()[0]
@@ -212,12 +195,52 @@ function enforceBankAccountsHeadersAndFormats_(sheet) {
   const same = header.join("|") === BANK_ACCOUNTS_HEADERS.join("|");
   if (!same) {
     sheet.getRange(1, 1, 1, BANK_ACCOUNTS_HEADERS.length).setValues([BANK_ACCOUNTS_HEADERS]);
+    forceFormats = true;
   }
+  if (!forceFormats) return;
 
   const maxRows = sheet.getMaxRows();
   sheet.getRange(1, 1, maxRows, 1).setNumberFormat("@"); // AccountID
   sheet.getRange(1, 2, maxRows, 1).setNumberFormat("@"); // Onboarding_ID
   sheet.getRange(1, 3, maxRows, 1).setNumberFormat("@"); // AccountNumber
+}
+
+function getBankAccountsCacheKey_(sheet) {
+  try {
+    return String(sheet.getSheetId());
+  } catch (e) {
+    return String(sheet.getName() || "Bank_Accounts");
+  }
+}
+
+function invalidateBankAccountsCache_(sheet) {
+  const key = getBankAccountsCacheKey_(sheet);
+  delete BANK_ACCOUNTS_RUNTIME_CACHE[key];
+}
+
+function getBankAccountsCache_(sheet) {
+  const key = getBankAccountsCacheKey_(sheet);
+  const cached = BANK_ACCOUNTS_RUNTIME_CACHE[key];
+  if (cached) return cached;
+
+  const index = { byOnboarding: {} };
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const data = sheet.getRange(2, 1, lastRow - 1, BANK_ACCOUNTS_HEADERS.length).getValues();
+    for (let i = 0; i < data.length; i++) {
+      const onboardingId = String(data[i][1] || "").trim();
+      if (!onboardingId) continue;
+      const acc = String(data[i][2] || "").trim();
+      if (!index.byOnboarding[onboardingId]) {
+        index.byOnboarding[onboardingId] = { accounts: [], rows: [] };
+      }
+      index.byOnboarding[onboardingId].rows.push(i + 2);
+      if (acc) index.byOnboarding[onboardingId].accounts.push(acc);
+    }
+  }
+
+  BANK_ACCOUNTS_RUNTIME_CACHE[key] = index;
+  return index;
 }
 
 function buildDeterministicAccountId_(onboardingId, accountNumber) {

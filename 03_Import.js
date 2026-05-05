@@ -116,11 +116,11 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
 
   for (let i = 0; i < candidates.length; i++) {
     const srcRow = candidates[i].values;
-    const destRow = new Array(DEST_SCHEMA.length).fill("");
+    const destRow = new Array(mapping.destHeaders.length).fill("");
 
     for (const k in SYSTEM_DEFAULTS) {
       const idx = mapping.dstIndex[k];
-      if (idx != null && idx < DEST_SCHEMA.length) destRow[idx] = SYSTEM_DEFAULTS[k];
+      if (idx != null && idx < destRow.length) destRow[idx] = SYSTEM_DEFAULTS[k];
     }
 
     for (let s = 0; s < mapping.sourceHeaders.length; s++) {
@@ -131,7 +131,7 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
       if (!destHeader) continue;
 
       const dIdx = mapping.dstIndex[destHeader];
-      if (dIdx == null || dIdx >= DEST_SCHEMA.length) continue;
+      if (dIdx == null || dIdx >= destRow.length) continue;
 
       // Priority rule for renamed RPK field:
       // when both columns exist, prefer "numer rpk" over legacy "numer rpk w knf".
@@ -179,7 +179,7 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
   }
 
   if (!CONFIG.FEATURES.DRY_RUN) {
-    dest.getRange(destStartRow, 1, out.length, DEST_SCHEMA.length).setValues(out);
+    dest.getRange(destStartRow, 1, out.length, mapping.destHeaders.length).setValues(out);
   }
 
   if (!CONFIG.FEATURES.DRY_RUN && !forceMode && markIdx != null && markIdx >= 0) {
@@ -221,7 +221,7 @@ function buildDestDedupeIndex_(runId, mapping, dest) {
     return idx;
   }
 
-  const data = dest.getRange(2, 1, lastRow - 1, DEST_SCHEMA.length).getValues();
+  const data = dest.getRange(2, 1, lastRow - 1, mapping.destHeaders.length).getValues();
   for (let i = 0; i < data.length; i++) {
     const nip = String(data[i][nipIdx] || "").trim();
     const sub = data[i][subIdx];
@@ -399,7 +399,7 @@ function destRowMatchesSource_(dest, mapping, rowNum, sourceRowValues) {
 
   if (nipIdx == null || subIdx == null || srcNipIdx == null || srcSubIdx == null) return false;
 
-  const destRow = dest.getRange(rowNum, 1, 1, DEST_SCHEMA.length).getValues()[0];
+  const destRow = dest.getRange(rowNum, 1, 1, mapping.destHeaders.length).getValues()[0];
   const destNip = String(destRow[nipIdx] || "").trim();
   const destSub = destRow[subIdx];
   if (!destNip) return false;

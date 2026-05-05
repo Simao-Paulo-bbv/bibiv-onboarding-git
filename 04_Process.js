@@ -29,7 +29,7 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
   const beneficialPersonIdx = mapping.destKey.beneficialPersonIdx;
 
   const rowsToRead = endRow - startRow + 1;
-  const data = dest.getRange(startRow, 1, rowsToRead, DEST_SCHEMA.length).getValues();
+  const data = dest.getRange(startRow, 1, rowsToRead, mapping.destHeaders.length).getValues();
 
   let processed = 0;
 
@@ -46,13 +46,26 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
     }
 
     const currentSync = syncIdx != null ? String(row[syncIdx] || "") : "";
-    const mainAlreadyOk = currentSync.indexOf(CONFIG.MARKERS.MAIN_OK) >= 0;
+    const statusValRaw = (statusIdx != null) ? String(row[statusIdx] || "") : "";
+    const statusVal = statusValRaw.trim();
+    const isStatusInit = (statusVal !== "" && statusVal === String(CONFIG.STATUS_TO_SEND));
+    const hasExternalManagedStatus = (statusVal !== "" && !isStatusInit);
+    const mainAlreadyOk = currentSync.indexOf(CONFIG.MARKERS.MAIN_OK) >= 0 || hasExternalManagedStatus;
 
     // Czy rekord w AppSheet MAIN jest już poprawnie zapisany.
     // Uwaga: mainOk MUSI być zawsze zainicjalizowane, bo używamy go później do markowania SOURCE.
     let mainOk = mainAlreadyOk;
 
-    log_(runId, "INFO", "ROW_START", { rowNum, mainAlreadyOk });
+    log_(runId, "INFO", "ROW_START", { rowNum, mainAlreadyOk, hasExternalManagedStatus });
+
+    // Hard safety: if Status is already managed by AppSheet (not empty and not Init),
+    // this script must not touch that record anymore.
+    if (hasExternalManagedStatus) {
+      log_(runId, "INFO", "ROW_SKIP_EXTERNAL_STATUS_MANAGED", { rowNum, status: statusVal });
+      log_(runId, "INFO", "ROW_END", { rowNum });
+      processed++;
+      continue;
+    }
 
     if (CONFIG.FEATURES.DRY_RUN) {
       processed++;
@@ -61,19 +74,26 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
 
     // Ensure ID exists
     let id = String(row[idIdx] || "").trim();
+    let idAssignedNow = false;
     if (!id) {
       id = allocateNextId_(dest, idIdx);
       dest.getRange(rowNum, idIdx + 1).setValue(id);
-      SpreadsheetApp.flush();
+      idAssignedNow = true;
       log_(runId, "INFO", "ID_ASSIGNED", { rowNum, id });
     }
 
     // MF enrichment (skip if already done unless missing data)
     let mfCallResult = { ok: false, httpCode: 0, rateLimited: false, reason: "NOT_CALLED" };
     if (CONFIG.FEATURES.MF_ENABLED) {
+      if (mainAlreadyOk) {
+        log_(runId, "INFO", "MF_SKIP_MAIN_ALREADY_OK", { rowNum });
+      } else {
       const hasMfOk = currentSync.indexOf("MF_OK") >= 0;
       const hasMfRateLimit = currentSync.indexOf("MF_RATE_LIMIT") >= 0;
       const hasMfNoSubject = currentSync.indexOf("MF_NO_SUBJECT") >= 0;
+      const hasMfNotVatMarker = currentSync.indexOf("MF_NOT_VAT") >= 0;
+      const hasMfRegonBlock = currentSync.indexOf("MF_REGON_BLOCK") >= 0;
+      const hasMfVatBlock = currentSync.indexOf("MF_VAT_BLOCK") >= 0;
 
       const nameApiIdx = mapping.dstIndex["name_api"];
       const statusVatIdx = mapping.dstIndex["statusVat"];
@@ -88,6 +108,7 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       const krsVal = krsIdx != null ? String(row[krsIdx] || "").trim() : "";
       const workingAddressVal = workingAddressIdx != null ? String(row[workingAddressIdx] || "").trim() : "";
       const residenceAddressVal = residenceAddressIdx != null ? String(row[residenceAddressIdx] || "").trim() : "";
+      const isNotVatStatus = statusVatVal.toLowerCase() === "not vat";
 
       const hasMfDataAny = !!(nameApiVal || statusVatVal || regonVal || krsVal || workingAddressVal || residenceAddressVal);
       const hasMfDataComplete =
@@ -96,12 +117,18 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         !!regonVal &&
         !!(workingAddressVal || residenceAddressVal) &&
         (!(CONFIG && CONFIG.REQUIRE_KRS_FOR_ADD === true) || !!krsVal);
-
+      const hasConfirmedAndCompleteMf = hasMfOk && hasMfDataComplete;
+      const hasMfNoSubjectButComplete = hasMfNoSubject && hasMfDataComplete;
+      // For NOT VAT records we intentionally allow sparse enrichment:
+      // statusVat=Not VAT is enough to stop repeated MF retries.
+      const hasConfirmedNotVat = hasMfNotVatMarker || (hasMfOk && isNotVatStatus);
       const shouldSkipMf =
-        (CONFIG.FEATURES.MF_SKIP_IF_MF_OK && hasMfOk) ||
-        (CONFIG.FEATURES.MF_SKIP_IF_DATA_PRESENT && hasMfDataComplete) ||
-        hasMfRateLimit ||
-        hasMfNoSubject;
+        (CONFIG.FEATURES.MF_SKIP_IF_MF_OK && hasConfirmedAndCompleteMf) ||
+        (CONFIG.FEATURES.MF_SKIP_IF_DATA_PRESENT && hasMfDataComplete && hasMfOk) ||
+        hasConfirmedNotVat ||
+        hasMfRegonBlock ||
+        hasMfVatBlock ||
+        hasMfRateLimit;
 
       if (shouldSkipMf) {
         log_(runId, "INFO", "MF_SKIP", {
@@ -109,34 +136,91 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
           hasMfOk,
           hasMfData: hasMfDataAny,
           hasMfDataComplete,
+          hasConfirmedAndCompleteMf,
+          hasConfirmedNotVat,
+          hasMfRegonBlock,
+          hasMfVatBlock,
           hasMfRateLimit,
-          hasMfNoSubject
+          hasMfNoSubject,
+          hasMfNoSubjectButComplete
         });
       } else {
         const subDate = safeDateForMf_(row[mapping.destKey.submittedIdx]);
         mfCallResult = callMfAndWrite_(runId, dest, mapping, rowNum, nipRaw, subDate) || mfCallResult;
         if (syncIdx != null) {
           if (mfCallResult.ok) {
-            appendSyncMarker_(dest, rowNum, syncIdx, `MF_OK ${formatNow_()}`);
+            const okMarker = (mfCallResult.reason === "NOT_VAT")
+              ? `MF_OK MF_NOT_VAT ${formatNow_()}`
+              : `MF_OK ${formatNow_()}`;
+            appendSyncMarker_(dest, rowNum, syncIdx, okMarker);
           } else if (mfCallResult.rateLimited) {
             appendSyncMarker_(dest, rowNum, syncIdx, `MF_RATE_LIMIT ${formatNow_()}`);
           } else if (mfCallResult.reason === "NO_SUBJECT") {
             appendSyncMarker_(dest, rowNum, syncIdx, `MF_NO_SUBJECT ${formatNow_()}`);
+          } else if (String(mfCallResult.reason || "").indexOf("REGON_") === 0) {
+            appendSyncMarker_(dest, rowNum, syncIdx, `MF_REGON_BLOCK ${formatNow_()} ${String(mfCallResult.reason || "").slice(0, 80)}`);
+          } else if (String(mfCallResult.reason || "").indexOf("VAT_") === 0) {
+            appendSyncMarker_(dest, rowNum, syncIdx, `MF_VAT_BLOCK ${formatNow_()} ${String(mfCallResult.reason || "").slice(0, 80)}`);
           }
         }
       }
+      }
+    }
+
+    // Hard stop for REGON-blocked rows:
+    // do not call further APIs and do not send to AppSheet until row is corrected.
+    const hasMfRegonBlockNow = currentSync.indexOf("MF_REGON_BLOCK") >= 0 || String(mfCallResult.reason || "").indexOf("REGON_") === 0;
+    if (hasMfRegonBlockNow) {
+      log_(runId, "WARN", "ROW_BLOCKED_REGON", {
+        rowNum,
+        nip: nipRaw,
+        reason: String(mfCallResult.reason || "MF_REGON_BLOCK")
+      });
+      log_(runId, "INFO", "ROW_END", { rowNum });
+      processed++;
+      continue;
+    }
+
+    const hasMfRateLimitNow = currentSync.indexOf("MF_RATE_LIMIT") >= 0 || !!mfCallResult.rateLimited;
+    if (hasMfRateLimitNow) {
+      log_(runId, "WARN", "ROW_BLOCKED_RATE_LIMIT", {
+        rowNum,
+        nip: nipRaw,
+        reason: String(mfCallResult.reason || "MF_RATE_LIMIT")
+      });
+      log_(runId, "INFO", "ROW_END", { rowNum });
+      processed++;
+      continue;
+    }
+
+    // Hard stop for VAT technical/unrecognized failures:
+    // subject:null is handled as NOT VAT, but request/HTTP/shape errors must not reach IBAN/AppSheet.
+    const hasMfVatBlockNow = currentSync.indexOf("MF_VAT_BLOCK") >= 0 || String(mfCallResult.reason || "").indexOf("VAT_") === 0;
+    if (hasMfVatBlockNow) {
+      log_(runId, "WARN", "ROW_BLOCKED_VAT", {
+        rowNum,
+        nip: nipRaw,
+        reason: String(mfCallResult.reason || "MF_VAT_BLOCK")
+      });
+      log_(runId, "INFO", "ROW_END", { rowNum });
+      processed++;
+      continue;
     }
 
     // BANK ACCOUNTS (child table / sheet)
+    // Heavy operation; skip for rows already finalized in main flow.
     // Must run AFTER MF enrichment (so "accountNumbers" is already written to DEST if available)
     // and BEFORE AppSheet push (so child rows exist when bots/actions depend on them).
-    // Safe-guard: only run if the helper exists in the project.
-    try {
-      if (typeof syncBankAccountsFromMainRow_ === 'function') {
-        syncBankAccountsFromMainRow_(runId, dest, mapping, rowNum, id);
+    if (!mainAlreadyOk) {
+      try {
+        if (typeof syncBankAccountsFromMainRow_ === 'function') {
+          syncBankAccountsFromMainRow_(runId, dest, mapping, rowNum, id);
+        }
+      } catch (e) {
+        log_(runId, "WARN", "BANK_ACCOUNTS_HOOK_FAIL", { rowNum, err: String(e).slice(0, 900) });
       }
-    } catch (e) {
-      log_(runId, "WARN", "BANK_ACCOUNTS_HOOK_FAIL", { rowNum, err: String(e).slice(0, 900) });
+    } else {
+      log_(runId, "INFO", "BANK_ACCOUNTS_SKIP_MAIN_ALREADY_OK", { rowNum, onboardingId: id });
     }
 
     // Build main payload (after MF)
@@ -151,27 +235,55 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
     const hasBeneficialFullName = beneficialFullNameIdx != null && String(row[beneficialFullNameIdx] || "").trim();
 
     const needRefs =
-      (contactPersonIdx != null && hasContactFullName && !String(dest.getRange(rowNum, contactPersonIdx + 1).getValue() || "").trim()) ||
-      (managerPersonIdx != null && hasManagerFullName && !String(dest.getRange(rowNum, managerPersonIdx + 1).getValue() || "").trim()) ||
-      (beneficialPersonIdx != null && hasBeneficialFullName && !String(dest.getRange(rowNum, beneficialPersonIdx + 1).getValue() || "").trim());
+      (contactPersonIdx != null && hasContactFullName && !String(row[contactPersonIdx] || "").trim()) ||
+      (managerPersonIdx != null && hasManagerFullName && !String(row[managerPersonIdx] || "").trim()) ||
+      (beneficialPersonIdx != null && hasBeneficialFullName && !String(row[beneficialPersonIdx] || "").trim());
+
+    if (mainAlreadyOk && !needRefs) {
+      log_(runId, "INFO", "ROW_SKIP_ALREADY_COMPLETE", { rowNum });
+      log_(runId, "INFO", "ROW_END", { rowNum });
+      processed++;
+      continue;
+    }
 
     // Sending rules:
 // - ADD: only when row is truly new: Status is blank/empty OR already equals STATUS_TO_SEND (Init),
 //        and row has NOT been successfully sent to AppSheet yet.
 // - EDIT: only when already sent (APPSHEET_OK) AND we still need to backfill refs.
-    const statusValRaw = (statusIdx != null) ? String(dest.getRange(rowNum, statusIdx + 1).getValue() || "") : "";
-    const statusVal = statusValRaw.trim();
     const isStatusEmpty = (statusVal === "");
-    const isStatusInit = (statusVal !== "" && statusVal === String(CONFIG.STATUS_TO_SEND));
 
     const shouldAdd = (!mainAlreadyOk) && (isStatusEmpty || isStatusInit);
     const shouldEdit = (CONFIG.SKIP_IF_DEST_HAS_APPSHEET_OK && mainAlreadyOk && needRefs);
 
     // Hint for payload builder (some columns require different handling for Add vs Edit)
     const actionHint = shouldAdd ? "Add" : "Edit";
-    SpreadsheetApp.flush();
     let payloadMain = buildAppSheetPayloadFromDest_(dest, rowNum, actionHint);
     payloadMain = filterPayloadForAppSheet_(payloadMain, APPSHEET_MAIN_ALLOWED_COLS);
+
+    // Hard gate before ANY AppSheet call:
+    // without confirmed MF success and complete MF fields we do not send to People_List nor MAIN.
+    if (CONFIG.FEATURES.APPSHEET_ENABLED && CONFIG.FEATURES.MF_ENABLED && shouldAdd) {
+      const hasMfOkMarker = currentSync.indexOf("MF_OK") >= 0 || !!mfCallResult.ok;
+      const mfReadinessPre = evaluateMfReadinessForAdd_(payloadMain);
+      if (!hasMfOkMarker || !mfReadinessPre.ready) {
+        if (syncIdx != null) {
+          appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_WAITING_MF_DATA ${formatNow_()}`);
+        }
+        const missingPre = mfReadinessPre.missing.slice();
+        if (!hasMfOkMarker) missingPre.push("mf_ok_marker");
+        log_(runId, "WARN", "APPSHEET_WAITING_MF_DATA", {
+          rowNum,
+          actionToSend: CONFIG.APPSHEET_ACTION_ADD,
+          payloadId: String(payloadMain && payloadMain.ID ? payloadMain.ID : "").trim(),
+          payloadNip: String((payloadMain && (payloadMain.NIP_Control || payloadMain.nip)) ? (payloadMain.NIP_Control || payloadMain.nip) : "").trim(),
+          missing: missingPre.join(","),
+          mfCallReason: String(mfCallResult && mfCallResult.reason ? mfCallResult.reason : "NOT_CALLED")
+        });
+        log_(runId, "INFO", "ROW_END", { rowNum });
+        processed++;
+        continue;
+      }
+    }
 
     // 1) PEOPLE: ensure 3 roles and write PersonIDs back to MAIN sheet
     if (CONFIG.FEATURES.APPSHEET_ENABLED && CONFIG.FEATURES.PEOPLE_LIST_ENABLED) {
@@ -204,32 +316,35 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       if (shouldAdd) actionToSend = CONFIG.APPSHEET_ACTION_ADD;
       else if (shouldEdit) actionToSend = CONFIG.APPSHEET_ACTION_EDIT;
 
-      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && CONFIG.WRITE_STATUS_JUST_IN_TIME) {
-        // Do not keep re-writing Status in the sheet forever; set only if empty (optional)
-        if (statusIdx != null) {
-          // For a brand-new record we set Init right before the FIRST push.
-          // (Subsequent runs will not touch Status at all.)
-          if (String(dest.getRange(rowNum, statusIdx + 1).getValue() || "").trim() === "") {
-            dest.getRange(rowNum, statusIdx + 1).setValue(CONFIG.STATUS_TO_SEND);
-          }
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD) {
+        // Live Status guard (important):
+        // row snapshot can be stale; never overwrite any externally managed status.
+        const liveStatus = statusIdx != null ? String(dest.getRange(rowNum, statusIdx + 1).getValue() || "").trim() : "";
+        const liveIsInit = (liveStatus !== "" && liveStatus === String(CONFIG.STATUS_TO_SEND));
+        const liveIsEmpty = (liveStatus === "");
+        const liveExternalManaged = (liveStatus !== "" && !liveIsInit);
+        if (liveExternalManaged) {
+          log_(runId, "INFO", "ROW_SKIP_EXTERNAL_STATUS_MANAGED_LIVE", { rowNum, status: liveStatus });
+          log_(runId, "INFO", "ROW_END", { rowNum });
+          processed++;
+          continue;
         }
-        // Ensure payload carries Init
-        payloadMain["Status"] = CONFIG.STATUS_TO_SEND;
+
+        if (CONFIG.WRITE_STATUS_JUST_IN_TIME) {
+          // Never persist Init in local sheet before a successful Add.
+          // Init in local sheet caused repeated Add attempts and status overwrite loops.
+          // We only send Init for truly fresh rows (new ID assigned now + blank local status).
+          if (liveIsEmpty && idAssignedNow) {
+            payloadMain["Status"] = CONFIG.STATUS_TO_SEND;
+          } else if (payloadMain && Object.prototype.hasOwnProperty.call(payloadMain, "Status")) {
+            delete payloadMain["Status"];
+          }
+        } else if (payloadMain && Object.prototype.hasOwnProperty.call(payloadMain, "Status")) {
+          delete payloadMain["Status"];
+        }
       } else if (actionToSend === CONFIG.APPSHEET_ACTION_EDIT) {
         // Never send Status during EDIT (protect against overwriting AppSheet-side status)
         if (payloadMain && Object.prototype.hasOwnProperty.call(payloadMain, "Status")) delete payloadMain["Status"];
-      }
-
-      SpreadsheetApp.flush();
-
-      // rebuild payload after potential Status adjustments (JIT)
-      const actionHint2 = (actionToSend === CONFIG.APPSHEET_ACTION_ADD) ? "Add" : "Edit";
-      payloadMain = buildAppSheetPayloadFromDest_(dest, rowNum, actionHint2);
-      payloadMain = filterPayloadForAppSheet_(payloadMain, APPSHEET_MAIN_ALLOWED_COLS);
-
-      // If we're doing EDIT, strip Status again after filter (allowed list contains it)
-      if (actionToSend === CONFIG.APPSHEET_ACTION_EDIT && payloadMain && Object.prototype.hasOwnProperty.call(payloadMain, "Status")) {
-        delete payloadMain["Status"];
       }
 
       // Safety guard:
@@ -259,40 +374,22 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       }
 
       const mfReadiness = evaluateMfReadinessForAdd_(payloadMain);
-      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !mfReadiness.ready) {
+      const hasMfOkMarkerAfter = currentSync.indexOf("MF_OK") >= 0 || !!mfCallResult.ok;
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && (!mfReadiness.ready || !hasMfOkMarkerAfter)) {
         if (syncIdx != null) {
           appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_WAITING_MF_DATA ${formatNow_()}`);
         }
+        const missing = mfReadiness.missing.slice();
+        if (!hasMfOkMarkerAfter) missing.push("mf_ok_marker");
         log_(runId, "WARN", "APPSHEET_WAITING_MF_DATA", {
           rowNum,
           actionToSend,
           payloadId,
           payloadNip,
-          missing: mfReadiness.missing.join(","),
+          missing: missing.join(","),
           rowId: id,
-          rowNip: nipRaw
-        });
-        log_(runId, "INFO", "ROW_END", { rowNum });
-        processed++;
-        continue;
-      }
-
-      const payloadContactPhone = String(
-        payloadMain && payloadMain["numer telefonu osoby kontaktowej"] != null
-          ? payloadMain["numer telefonu osoby kontaktowej"]
-          : ""
-      ).trim();
-      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !payloadContactPhone) {
-        if (syncIdx != null) {
-          appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_WAITING_REQUIRED_PHONE ${formatNow_()}`);
-        }
-        log_(runId, "WARN", "APPSHEET_WAITING_REQUIRED_PHONE", {
-          rowNum,
-          actionToSend,
-          payloadId,
-          payloadNip,
-          rowId: id,
-          rowNip: nipRaw
+          rowNip: nipRaw,
+          mfCallReason: String(mfCallResult && mfCallResult.reason ? mfCallResult.reason : "NOT_CALLED")
         });
         log_(runId, "INFO", "ROW_END", { rowNum });
         processed++;
@@ -300,7 +397,8 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       }
 
       const payloadAccountNumbers = String(payloadMain && payloadMain.accountNumbers ? payloadMain.accountNumbers : "").trim();
-      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !payloadAccountNumbers) {
+      const isNotVatStatus = String(payloadMain && payloadMain.statusVat ? payloadMain.statusVat : "").trim().toLowerCase() === "not vat";
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !payloadAccountNumbers && !isNotVatStatus) {
         if (syncIdx != null) {
           appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_SKIP_MISSING_ACCOUNTNUMBERS ${formatNow_()}`);
         }
@@ -316,10 +414,26 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         processed++;
         continue;
       }
+      if (actionToSend === CONFIG.APPSHEET_ACTION_ADD && !payloadAccountNumbers && isNotVatStatus) {
+        log_(runId, "INFO", "APPSHEET_ALLOW_MISSING_ACCOUNTNUMBERS_NOT_VAT", {
+          rowNum,
+          payloadId,
+          payloadNip,
+          rowId: id,
+          rowNip: nipRaw
+        });
+      }
 
       try {
         if (shouldAdd) {
-          callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payloadMain, CONFIG.APPSHEET_ACTION_ADD, rowNum);
+          const addRes = callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payloadMain, CONFIG.APPSHEET_ACTION_ADD, rowNum);
+          if (statusIdx != null) {
+            const appSheetStatus = extractAppSheetStatusFromResponse_(addRes && addRes.parsed);
+            if (appSheetStatus) {
+              dest.getRange(rowNum, statusIdx + 1).setValue(appSheetStatus);
+              log_(runId, "INFO", "STATUS_SYNCED_FROM_APPSHEET", { rowNum, status: appSheetStatus });
+            }
+          }
           if (syncIdx != null) appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_OK ${formatNow_()}`);
           log_(runId, "INFO", "APPSHEET_OK_ADD", { rowNum });
           mainOk = true;
@@ -376,12 +490,13 @@ function ensurePeopleRefsForRow_(runId, dest, mapping, rowNum, payloadMain) {
   let contactId = idxContact != null ? String(dest.getRange(rowNum, idxContact + 1).getValue() || "").trim() : "";
   let managerId = idxManager != null ? String(dest.getRange(rowNum, idxManager + 1).getValue() || "").trim() : "";
   let beneficialId = idxBeneficial != null ? String(dest.getRange(rowNum, idxBeneficial + 1).getValue() || "").trim() : "";
+  let refsChanged = false;
 
   // CONTACT
   if (fullContact && idxContact != null && !contactId) {
     contactId = buildDeterministicPersonId_(onboardingId, "Contact", fullContact);
     dest.getRange(rowNum, idxContact + 1).setValue(contactId);
-    SpreadsheetApp.flush();
+    refsChanged = true;
     pushPersonToPeopleList_(runId, contactId, fullContact, "Contact", "imię i nazwisko osoby kontaktowej", onboardingId, rowNum);
   }
 
@@ -389,7 +504,7 @@ function ensurePeopleRefsForRow_(runId, dest, mapping, rowNum, payloadMain) {
   if (fullManager && idxManager != null && !managerId) {
     managerId = buildDeterministicPersonId_(onboardingId, "Manager", fullManager);
     dest.getRange(rowNum, idxManager + 1).setValue(managerId);
-    SpreadsheetApp.flush();
+    refsChanged = true;
     pushPersonToPeopleList_(runId, managerId, fullManager, "Manager", "imię i nazwisko kierownika", onboardingId, rowNum);
   }
 
@@ -397,12 +512,12 @@ function ensurePeopleRefsForRow_(runId, dest, mapping, rowNum, payloadMain) {
   if (fullBeneficial && idxBeneficial != null && !beneficialId) {
     beneficialId = buildDeterministicPersonId_(onboardingId, "BeneficialOwner", fullBeneficial);
     dest.getRange(rowNum, idxBeneficial + 1).setValue(beneficialId);
-    SpreadsheetApp.flush();
+    refsChanged = true;
     pushPersonToPeopleList_(runId, beneficialId, fullBeneficial, "BeneficialOwner", "imię i nazwisko beneficjenta", onboardingId, rowNum);
   }
 
   // marker
-  if (mapping.destKey.syncStatusIdx != null) {
+  if (refsChanged && mapping.destKey.syncStatusIdx != null) {
     appendSyncMarker_(dest, rowNum, mapping.destKey.syncStatusIdx, `PEOPLE_REFS_OK ${formatNow_()}`);
   }
 
@@ -498,18 +613,25 @@ function evaluateMfReadinessForAdd_(payload) {
   const missing = [];
   if (!payload) return { ready: false, missing: ["payload"] };
 
-  const requiredCols = ["name_api", "statusVat", "regon"];
-  if (CONFIG && CONFIG.REQUIRE_KRS_FOR_ADD === true) requiredCols.push("krs");
+  const statusVat = String(payload["statusVat"] || "").trim();
+  const isNotVat = statusVat.toLowerCase() === "not vat";
+
+  // NOT VAT flow: allow sending with minimal MF footprint.
+  // REGON can be missing for some NIPs and should not block the pipeline.
+  const requiredCols = isNotVat ? ["statusVat"] : ["name_api", "statusVat", "regon"];
+  if (!isNotVat && CONFIG && CONFIG.REQUIRE_KRS_FOR_ADD === true) requiredCols.push("krs");
   for (let i = 0; i < requiredCols.length; i++) {
     const key = requiredCols[i];
     const val = String(payload[key] || "").trim();
     if (!val) missing.push(key);
   }
 
-  const hasWorkingAddress = String(payload["workingAddress"] || "").trim() !== "";
-  const hasResidenceAddress = String(payload["residenceAddress"] || "").trim() !== "";
-  if (!hasWorkingAddress && !hasResidenceAddress) {
-    missing.push("workingAddress_or_residenceAddress");
+  if (!isNotVat) {
+    const hasWorkingAddress = String(payload["workingAddress"] || "").trim() !== "";
+    const hasResidenceAddress = String(payload["residenceAddress"] || "").trim() !== "";
+    if (!hasWorkingAddress && !hasResidenceAddress) {
+      missing.push("workingAddress_or_residenceAddress");
+    }
   }
 
   return { ready: missing.length === 0, missing: missing };
@@ -524,4 +646,15 @@ function isAppSheetSchemaMismatchError_(err) {
     (s.indexOf("data table") >= 0 && s.indexOf("is not available") >= 0) ||
     s.indexOf("appsheet_schema_mismatch") >= 0
   );
+}
+
+function extractAppSheetStatusFromResponse_(parsed) {
+  try {
+    const rows = parsed && parsed.Rows;
+    if (!rows || !rows.length) return "";
+    const status = String(rows[0] && rows[0].Status ? rows[0].Status : "").trim();
+    return status;
+  } catch (e) {
+    return "";
+  }
 }

@@ -1,23 +1,37 @@
 /** =========================
  *  ID allocation
  *  ========================= */
+const TEXT_COL_FORMATTED_CACHE = {};
+const ID_ALLOC_CACHE = {};
+
 function allocateNextId_(dest, idIdx) {
-  const lastRow = dest.getLastRow();
-  if (lastRow < 2) return "ID00000001";
-
-  const vals = dest.getRange(2, idIdx + 1, lastRow - 1, 1).getValues();
-  let max = 0;
-
-  for (let i = 0; i < vals.length; i++) {
-    const s = String(vals[i][0] || "").trim();
-    const m = s.match(/^ID(\d+)$/);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      if (n > max) max = n;
+  const key = getIdAllocCacheKey_(dest, idIdx);
+  if (!ID_ALLOC_CACHE[key]) {
+    const lastRow = dest.getLastRow();
+    let max = 0;
+    if (lastRow >= 2) {
+      const vals = dest.getRange(2, idIdx + 1, lastRow - 1, 1).getValues();
+      for (let i = 0; i < vals.length; i++) {
+        const s = String(vals[i][0] || "").trim();
+        const m = s.match(/^ID(\d+)$/);
+        if (!m) continue;
+        const n = parseInt(m[1], 10);
+        if (n > max) max = n;
+      }
     }
+    ID_ALLOC_CACHE[key] = { max: max };
   }
 
-  return "ID" + String(max + 1).padStart(8, "0");
+  ID_ALLOC_CACHE[key].max++;
+  return "ID" + String(ID_ALLOC_CACHE[key].max).padStart(8, "0");
+}
+
+function getIdAllocCacheKey_(sheet, idIdx) {
+  try {
+    return String(sheet.getSheetId()) + ":" + String(idIdx);
+  } catch (e) {
+    return String(sheet.getName() || "sheet") + ":" + String(idIdx);
+  }
 }
 
 /** =========================
@@ -152,12 +166,24 @@ function writeIfColExists_(sheet, mapping, rowNum, colName, value) {
   // - krs/regon: mogą mieć wiodące zera
   // - accountNumbers: bardzo długie numery rachunków (26 cyfr) / lista po przecinku
   if (colName === "krs" || colName === "regon" || colName === "accountNumbers" || colName === "numer rachunku bankowego") {
-    cell.setNumberFormat("@");
+    ensureTextFormatForColumnOnce_(sheet, idx + 1);
     // Dodatkowo wymuś typ string po stronie Apps Script
     value = (value === null || value === undefined) ? "" : String(value);
   }
 
   cell.setValue(value);
+}
+
+function ensureTextFormatForColumnOnce_(sheet, col1Based) {
+  try {
+    const sid = String(sheet.getSheetId());
+    const key = sid + ":" + String(col1Based);
+    if (TEXT_COL_FORMATTED_CACHE[key]) return;
+    sheet.getRange(1, col1Based, sheet.getMaxRows(), 1).setNumberFormat("@");
+    TEXT_COL_FORMATTED_CACHE[key] = true;
+  } catch (e) {
+    // no-op
+  }
 }
 
 function isVerbose_() {

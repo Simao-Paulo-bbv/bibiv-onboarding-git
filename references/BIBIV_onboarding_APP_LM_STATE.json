@@ -1,0 +1,134 @@
+{
+  "project": "BIBIV_onboarding_APP",
+  "purpose": "AppSheet + Google Sheets + Apps Script onboarding workflow with document-generation queue, file-request tracking, generated-document email sending, signed-document upload, and people/MF enrichment.",
+  "main_table": "BIBIV_onboarding_APP",
+  "tables": {
+    "BIBIV_onboarding_APP": {
+      "role": "Main onboarding case row",
+      "key_columns": ["ID", "Status", "NIP_Control"],
+      "generation_columns": ["Is_Generating_Now", "Generation_Triggered_By", "Generation_Requested_By", "Generation_Queued_At", "Generation_Started_At", "Generation_Finished_At"],
+      "person_refs": ["ContactPersonID", "ManagerPersonID", "BeneficialOwnerPersonID"],
+      "important_statuses": ["New", "In progress", "Preparing applications", "Applications Generated", "Preparing documents", "Agreements Generated", "Sending documents", "Waiting for client signature", "Sending signed documents", "Active"]
+    },
+    "Doc_Templates": {
+      "role": "Active template catalog used to create Generation_Job_Items and Agreements_Files",
+      "columns": ["Template_ID", "Category", "File_Name_Prefix", "Folder_Path", "Type", "File Extension", "Is_Active", "Trigger_Condition"],
+      "categories": ["Application", "Agreement"]
+    },
+    "Agreements_Files": {
+      "role": "File request/output rows for generated documents and email attachments",
+      "columns": ["ID", "Onboarding_ID", "Type", "File Extension", "File", "File_Name", "Folder_Path", "Prefix", "Category", "Date_Created", "File_status", "Template_ID_Reference", "Job_ID", "Job_Item_ID"],
+      "statuses": ["Set Up", "Ready", "Waiting for upload", "Uploaded"],
+      "categories": ["Application", "Agreement"]
+    },
+    "Generation_Jobs": {
+      "role": "Generation queue head; one job per onboarding and doc category",
+      "columns": ["Job_ID", "Onboarding_ID", "Job_Type", "Job_Status", "Queued_At", "Started_At", "Finished_At", "Requested_By", "NIP_Control"],
+      "job_types": ["Application", "Agreement"],
+      "statuses": ["Queued", "Creating items", "File requests created", "Generating files", "Finished"]
+    },
+    "Generation_Job_Items": {
+      "role": "Per-template work item created by job, converted to Agreements_Files row",
+      "columns": ["Job_Item_ID", "Job_ID", "Onboarding_ID", "Template_ID", "Category", "Type", "NIP_Control", "File_Name_Prefix", "Folder_Path", "File_Extension", "File_Name", "File", "Item_Status", "Created_At"],
+      "statuses": ["Queued", "File request created"]
+    },
+    "Signed_Documents": {
+      "role": "Rows for client-uploaded signed files",
+      "statuses": ["Waiting for upload", "Uploaded"]
+    },
+    "People_List": {
+      "role": "Normalized people for Contact/Manager/BeneficialOwner linked to onboarding",
+      "columns": ["PersonID", "FullName", "FirstNameFinal", "LastNameFinal", "Role", "SourceFullNameColum", "OnboardingID", "NameOverride", "NameNeedsReview"]
+    },
+    "Bank_Accounts": {
+      "role": "Related bank accounts for onboarding",
+      "columns": ["AccountID", "Onboarding_ID", "AccountNumber"]
+    },
+    "Static_Attachments": {
+      "role": "Static email attachments selected by Is_Active and Category",
+      "columns_inferred": ["File", "Is_Active", "Category"]
+    }
+  },
+  "apps_script_files": {
+    "00_Config.gs": "CONFIG, schemas, aliases, API/table names, feature flags, secrets config references",
+    "01_Entry.gs": "runSyncAndProcess orchestration and pending-row processing",
+    "02_Headers_Mapping.gs": "header enforcement, text formats, mapping, source marker column",
+    "03_Import.gs": "source import and destination dedupe index",
+    "04_Process.gs": "destination row processing, MF/AppSheet pushes, People_List refs",
+    "05_AppSheet_API.gs": "AppSheet Add/Edit API wrapper",
+    "06_MF_API.gs": "MF/VAT lookup and writeback",
+    "07_Payload_And_Normalization.gs": "payload build and field normalization",
+    "08_ID_And_Dedupe_Time.gs": "IDs, dedupe keys, timestamps, utility writes",
+    "09_Logging.gs": "logging and log sheet support",
+    "10_Sheet_And_Header_Utils.gs": "sheet/header helper functions"
+  },
+  "core_actions": {
+    "Send for approval": {
+      "table": "BIBIV_onboarding_APP",
+      "type": "grouped",
+      "sequence": ["Change status (Preparing applications)", "Create application generation job"],
+      "condition": "AND(IN(CONTEXT(\"View\"), LIST(\"New leads\", \"New or Sending for approval_Detail\")), [Status] = \"New\")"
+    },
+    "Send Documents to client": {
+      "table": "BIBIV_onboarding_APP",
+      "type": "grouped",
+      "sequence": ["Change status (Preparing documents)", "Create agreement generation job"],
+      "condition": "IN(CONTEXT(\"View\"), LIST(\"In progress\"))"
+    },
+    "Create application generation job": {
+      "from": "BIBIV_onboarding_APP",
+      "to": "Generation_Jobs",
+      "sets": {"Job_ID": "UNIQUEID()", "Onboarding_ID": "[ID]", "Job_Type": "Application", "Job_Status": "Queued", "Queued_At": "NOW()", "Requested_By": "USEREMAIL()", "NIP_Control": "[NIP_Control]"}
+    },
+    "Create agreement generation job": {
+      "from": "BIBIV_onboarding_APP",
+      "to": "Generation_Jobs",
+      "sets": {"Job_ID": "UNIQUEID()", "Onboarding_ID": "[ID]", "Job_Type": "Agreement", "Job_Status": "Queued", "Queued_At": "NOW()", "Requested_By": "USEREMAIL()", "NIP_Control": "[NIP_Control]"}
+    },
+    "Job - start if next": {
+      "table": "Generation_Jobs",
+      "sets": {"Job_Status": "Creating items", "Started_At": "NOW()"},
+      "condition_summary": "Job_Status is Queued, job is oldest queued by Queued_At, and no job has status Creating items or Generating files."
+    },
+    "JOBITEM - create file request and mark done": {
+      "table": "Generation_Job_Items",
+      "type": "grouped",
+      "sequence": ["JOBITEM - create file request", "JOBITEM - mark file request created"]
+    }
+  },
+  "core_bots": {
+    "JOB - start queued job": "On Generation_Jobs data change, run action Job - start if next on LIST([Job_ID]).",
+    "JOB - create job items": "On Generation_Jobs update when Job_Status = Creating items and there are no items for Job_ID, a minimal webhook adds Generation_Job_Items rows from active Doc_Templates where Category = Job_Type. The webhook sends only Template_ID and Item_Status; other fields are initial values or app formulas.",
+    "JOBITEM - create Agreements_Files rows": "On Generation_Job_Items add with Item_Status = Queued, run JOBITEM - create file request and mark done on LIST([Job_Item_ID]).",
+    "JOB - finish and continue queue": "On Generation_Job_Items update when all items for the job are File request created, mark Generation_Jobs file requests created and start next queued job.",
+    "Generate Agreements": "Legacy native AppSheet PDF generator on Agreements_Files; disable for Agreement documents when using Apps Script generator.",
+    "Generate Agreements - Apps Script": "On Generation_Job_Items update when all sibling items for Job_ID are File request created, call generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId). This only enqueues the Job_ID in standalone Apps Script BIBIV_Onboarding_DocsCreator. A 1-minute time-trigger worker processNextQueuedDocGenerationJob processes one queued job at a time, exports Google Docs templates to PDF via Drive/Docs, marks Agreements_Files Ready, marks Generation_Job_Items Agreement file created, and updates main Status to Agreements Generated when all agreement files are ready.",
+    "Generate Applications": "Analogous to Generate Agreements for Category = Application; details partially uncaptured.",
+    "Send agreements": "When agreements generated, change status to Sending documents, email ready Agreement files plus active static Agreement attachments, then change status to Waiting for client signature."
+  },
+  "queue_invariants": [
+    "At most one active generation job at a time. Active statuses: Creating items, Generating files.",
+    "Only oldest Queued job by Queued_At may start.",
+    "Job item creation is guarded by COUNT(items for Job_ID)=0.",
+    "Completion of a job's file-request phase requires all items Item_Status = File request created."
+  ],
+  "file_naming_current": {
+    "separator": "__",
+    "file_name_formula": "CONCATENATE([NIP_Control], \"/\", [File_Name_Prefix], \"__\", [NIP_Control], \"__\", TEXT(TODAY(), \"DD-MM-YYYY\"))",
+    "file_formula": "CONCATENATE([Folder_Path], \"/\", [NIP_Control], \"/\", [File_Name_Prefix], \"__\", [NIP_Control], \"__\", TEXT(TODAY(), \"DD-MM-YYYY\"), [File_Extension])",
+    "path_rule": "Folder_Path remains a constant root such as Files_Application_ or Files_Agreements_; formulas must add an explicit slash before NIP_Control, producing Files_Agreements_/NIP/file.pdf rather than Files_Agreements_NIP/file.pdf."
+  },
+  "current_working_notes": [
+    "Agreement document generation and sending has been verified working after moving heavy file/path expressions out of the JOB - create job items webhook.",
+    "Agreement PDF generation has moved from native AppSheet Create a new file tasks to standalone Apps Script BIBIV_Onboarding_DocsCreator in apps-script-docs-creator/. AppSheet calls generateAgreementFilesFromAppSheet to enqueue a job; processNextQueuedDocGenerationJob runs from a 1-minute trigger and generates one queued Job_ID at a time so Google Docs headers, footers, margins, and page numbers survive PDF export.",
+    "Generation_Job_Items uses Initial value for Job_Item_ID, Job_ID, Item_Status/Created_At and App formula for Onboarding_ID, NIP_Control, template-derived fields, File_Name, and File.",
+    "The old full webhook body with inline File/File_Name CONCATENATE expressions should be treated as superseded because it can trigger AppSheet quote parsing errors."
+  ],
+  "verify_before_editing": [
+    "Full Trigger: Signed Docs Ready condition and target status value.",
+    "Generate Applications bot branches and task settings.",
+    "Whether legacy actions Prepare applications/agreements and Add templates files are still referenced.",
+    "Duplicate installTimeTriggerEveryMinute function definitions.",
+    "Duplicate JOBITEM mark action variants."
+  ]
+}

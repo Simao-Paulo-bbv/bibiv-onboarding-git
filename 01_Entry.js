@@ -58,6 +58,7 @@ function runSyncAndProcess() {
     const importRes = importFromSource_(runId, mapping, source, dest, startedAt);
 
     let processed = 0;
+    let backfill = { rows: 0, cells: 0, candidates: 0, apiCalls: 0 };
 
     // Always try to process DEST rows that are still "pending" (e.g. runtime cut on previous run).
     // If we imported rows in this run, process only that range; otherwise process the whole DEST (data) range.
@@ -89,9 +90,19 @@ function runSyncAndProcess() {
       log_(runId, "INFO", "NO_NEW_ROWS_TO_PROCESS");
     }
 
-log_(runId, "INFO", "END", {
+    // Optional one-off maintenance: fill missing fields in already imported rows.
+    // This step updates only blank values and never touches Status.
+    if (CONFIG.BACKFILL_EXISTING_ENABLED && hasDestData) {
+      backfill = backfillExistingMissingFields_(runId, mapping, source, dest, startedAt);
+    }
+
+    log_(runId, "INFO", "END", {
       imported: importRes.imported,
       processedLogic: processed,
+      backfillRows: backfill.rows || 0,
+      backfillCells: backfill.cells || 0,
+      backfillCandidates: backfill.candidates || 0,
+      backfillApiCalls: backfill.apiCalls || 0,
       elapsedMs: Date.now() - startedAt,
       forceImport: CONFIG.FORCE_IMPORT ? true : false
     });
@@ -132,6 +143,7 @@ function processPendingDestRows_(runId, mapping, source, dest, startedAt) {
 
   const syncIdx = mapping.destKey.syncStatusIdx;
   const idIdx = mapping.destKey.idIdx;
+  const statusIdx = mapping.destKey.statusIdx;
   const nipIdx = mapping.destKey.nipControlIdx != null ? mapping.destKey.nipControlIdx : mapping.destKey.nipIdx;
 
   // ref cols (mogą istnieć)
@@ -143,7 +155,7 @@ function processPendingDestRows_(runId, mapping, source, dest, startedAt) {
   const bNameIdx = mapping.dstIndex["imię i nazwisko beneficjenta"];
 
   if (syncIdx == null || idIdx == null || nipIdx == null) {
-    log_(runId, "WARN", "PENDING_SKIP_MISSING_INDEXES", { syncIdx, idIdx, nipIdx });
+    log_(runId, "WARN", "PENDING_SKIP_MISSING_INDEXES", { syncIdx, idIdx, statusIdx, nipIdx });
     return 0;
   }
 
@@ -160,6 +172,7 @@ function processPendingDestRows_(runId, mapping, source, dest, startedAt) {
   addCol(idIdx, "ID");
   addCol(nipIdx, "NIP");
   addCol(syncIdx, "SYNC");
+  addCol(statusIdx, "STATUS");
   addCol(cIdx, "CREF");
   addCol(mIdx, "MREF");
   addCol(bIdx, "BREF");
@@ -201,10 +214,19 @@ if (scanRowStart !== 2) {
     const id = String(getVal("ID") || "").trim();
     const nip = String(getVal("NIP") || "").trim();
     const sync = String(getVal("SYNC") || "");
+    const status = String(getVal("STATUS") || "").trim();
 
     if (!nip) continue;
 
+    const isStatusInit = (status !== "" && status === String(CONFIG.STATUS_TO_SEND));
+    const hasExternalManagedStatus = (status !== "" && !isStatusInit);
+    if (hasExternalManagedStatus) continue;
+
     const hasMainOk = sync.indexOf(CONFIG.MARKERS.MAIN_OK) >= 0;
+    const hasRegonBlock = sync.indexOf("MF_REGON_BLOCK") >= 0;
+    const hasVatBlock = sync.indexOf("MF_VAT_BLOCK") >= 0;
+    const hasMfRateLimit = sync.indexOf("MF_RATE_LIMIT") >= 0;
+    if (hasRegonBlock || hasVatBlock || hasMfRateLimit) continue;
     // braki refów
     const cref = String(getVal("CREF") || "").trim();
     const mref = String(getVal("MREF") || "").trim();
@@ -237,16 +259,35 @@ if (scanRowStart !== 2) {
     return 0;
   }
 
-  // Procesuj pendingi w małych porcjach (pojedyncze range’y)
-  let processed = 0;
-  for (let i = 0; i < pendingRows.length; i++) {
-    if (Date.now() - startedAt > CONFIG.MAX_RUNTIME_MS - 2500) break;
-
+  // Procesuj pendingi w porcjach po ciągłych zakresach (mniej overhead niż 1-row call).
+  const groups = [];
+  let gStart = pendingRows[0];
+  let gEnd = pendingRows[0];
+  for (let i = 1; i < pendingRows.length; i++) {
     const r = pendingRows[i];
-    processed += processDestRows_(runId, mapping, source, dest, r, r, startedAt, [], (mapping && mapping.sourceKey && typeof mapping.sourceKey.markIdx === 'number') ? mapping.sourceKey.markIdx : -1);
+    if (r === gEnd + 1) {
+      gEnd = r;
+    } else {
+      groups.push({ start: gStart, end: gEnd });
+      gStart = r;
+      gEnd = r;
+    }
+  }
+  groups.push({ start: gStart, end: gEnd });
+
+  const sourceMarkIdx =
+    (mapping && mapping.sourceKey && typeof mapping.sourceKey.markIdx === "number")
+      ? mapping.sourceKey.markIdx
+      : -1;
+
+  let processed = 0;
+  for (let i = 0; i < groups.length; i++) {
+    if (Date.now() - startedAt > CONFIG.MAX_RUNTIME_MS - 2500) break;
+    const g = groups[i];
+    processed += processDestRows_(runId, mapping, source, dest, g.start, g.end, startedAt, [], sourceMarkIdx);
   }
 
-  log_(runId, "INFO", "PENDING_DONE", { pendingRows: pendingRows.length, processed });
+  log_(runId, "INFO", "PENDING_DONE", { pendingRows: pendingRows.length, groups: groups.length, processed });
   return processed;
 }
 
