@@ -30,7 +30,7 @@ function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId
   };
 
   enqueueDocGenerationJob_(runId, args);
-  ensureDocGenerationQueueTrigger();
+  ensureDocGenerationQueueTrigger({ refresh: true });
   log_(runId, "INFO", "DOCGEN_ENQUEUED", args);
   return { ok: true, queued: true, jobId: args.jobId };
 }
@@ -378,11 +378,17 @@ function requeueDocGenerationJobAfterFailure_(runId, args, err) {
   }
 }
 
-function ensureDocGenerationQueueTrigger() {
+function ensureDocGenerationQueueTrigger(options) {
+  options = options || {};
   const handler = "processNextQueuedDocGenerationJob";
-  const exists = ScriptApp.getProjectTriggers().some(trigger => trigger.getHandlerFunction() === handler);
-  if (exists) return;
   const afterMs = Number(CONFIG.DOC_GENERATOR.QUEUE_TRIGGER_AFTER_MS || 0);
+  if (options.refresh && afterMs > 0) {
+    deleteTriggersForHandler_(handler);
+  } else {
+    const exists = ScriptApp.getProjectTriggers().some(trigger => trigger.getHandlerFunction() === handler);
+    if (exists) return;
+  }
+
   const builder = ScriptApp.newTrigger(handler).timeBased();
   if (afterMs > 0) {
     builder.after(afterMs).create();
