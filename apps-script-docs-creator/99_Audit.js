@@ -34,3 +34,76 @@ function uniqueMatches_(text, pattern) {
   });
   return out.sort();
 }
+
+function authorizeDocGenerator() {
+  const runId = makeRunId_();
+  const result = {
+    ok: true,
+    projectRootFolderId: CONFIG.DOC_GENERATOR.OUTPUT_ROOT_FOLDER_ID,
+    dataSpreadsheetId: CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID,
+    queueSize: readDocGenerationQueue_(PropertiesService.getScriptProperties()).length,
+    triggers: ScriptApp.getProjectTriggers().map(trigger => ({
+      handler: trigger.getHandlerFunction(),
+      eventType: String(trigger.getEventType())
+    })),
+    sheets: {}
+  };
+
+  const root = DriveApp.getFolderById(CONFIG.DOC_GENERATOR.OUTPUT_ROOT_FOLDER_ID);
+  result.projectRootFolderName = root.getName();
+
+  const spreadsheet = SpreadsheetApp.openById(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID);
+  result.dataSpreadsheetName = spreadsheet.getName();
+
+  Object.keys(CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES || {}).forEach(tableName => {
+    const sheetName = CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES[tableName];
+    const sheet = spreadsheet.getSheetByName(sheetName);
+    result.sheets[tableName] = sheet ? {
+      sheetName: sheetName,
+      lastRow: sheet.getLastRow(),
+      lastColumn: sheet.getLastColumn()
+    } : {
+      sheetName: sheetName,
+      missing: true
+    };
+  });
+
+  log_(runId, "INFO", "DOCGEN_AUTH_CHECK", result);
+  return result;
+}
+
+function debugDocGenerationState(onboardingId, jobId, agreementFileId) {
+  const runId = makeRunId_();
+  const args = {
+    onboardingId: String(onboardingId || "").trim(),
+    jobId: String(jobId || "").trim(),
+    agreementFileId: String(agreementFileId || "").trim()
+  };
+  const queue = readDocGenerationQueue_(PropertiesService.getScriptProperties());
+  const pendingFiles = (args.onboardingId || args.jobId || args.agreementFileId)
+    ? findPendingAgreementFileRows_(runId, args)
+    : [];
+
+  const result = {
+    ok: true,
+    args: args,
+    queueSize: queue.length,
+    queue: queue,
+    triggers: ScriptApp.getProjectTriggers().map(trigger => ({
+      handler: trigger.getHandlerFunction(),
+      eventType: String(trigger.getEventType())
+    })),
+    pendingFiles: pendingFiles.map(row => ({
+      id: getField_(row, "ID"),
+      jobId: getField_(row, "Job_ID"),
+      onboardingId: getField_(row, "Onboarding_ID"),
+      status: getField_(row, "File_status"),
+      category: getField_(row, "Category"),
+      templateId: getField_(row, "Template_ID_Reference"),
+      file: getField_(row, "File")
+    }))
+  };
+
+  log_(runId, "INFO", "DOCGEN_DEBUG_STATE", result);
+  return result;
+}
