@@ -5,6 +5,7 @@ const CONFIG = {
   APPSHEET_ACCESS_KEY: "V2-dLnyp-uEkhm-vaJQY-lQAmj-czhAH-xLbR3-dA8Oc-oFxgE",
   APPSHEET_API_URL: "https://www.appsheet.com/api/v2/apps/{appId}/tables/{table}/Action",
   APPSHEET_TIMEOUT_MS: 20000,
+  APPSHEET_ACTION_ADD: "Add",
   APPSHEET_ACTION_EDIT: "Edit",
   DOC_GENERATOR: {
     OUTPUT_ROOT_FOLDER_ID: "1iHYmHQCpA4IHEfnjrV7okk3sqjw6MkOd",
@@ -13,6 +14,7 @@ const CONFIG = {
     FILE_STATUS_SET_UP: "Set Up",
     FILE_STATUS_READY: "Ready",
     FILE_STATUS_FAILED: "",
+    SIGNED_DOCUMENT_STATUS_WAITING: "Waiting for upload",
     ITEM_STATUS_FILE_CREATED: "Agreement file created",
     MAIN_STATUS_AGREEMENTS_GENERATED: "Agreements Generated",
     OVERWRITE_EXISTING_PDF: true,

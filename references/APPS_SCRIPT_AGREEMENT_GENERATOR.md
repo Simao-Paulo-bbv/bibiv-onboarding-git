@@ -178,13 +178,41 @@ For a queued job:
    Generation_Job_Items[Item_Status] = "Agreement file created"
    ```
 
-4. If all generated files for the job are ready, updates:
+4. Creates missing `Signed_Documents` upload rows for generated agreement docs only.
+
+5. If all generated files for the job are ready, updates:
 
    ```text
    BIBIV_onboarding_APP[Status] = "Agreements Generated"
    ```
 
 The existing `JOB - finish and continue queue` bot can still finish the `Generation_Jobs` row because the script sets `Generation_Job_Items[Item_Status] = "Agreement file created"`.
+
+## Signed upload placeholders
+
+For every successfully generated agreement file, the worker creates a matching row in `Signed_Documents` so the client-returned signed file can be uploaded later.
+
+Static attachments are intentionally excluded because they are stored in `Static_Attachments`, not in `Agreements_Files`.
+
+Deduplication key:
+
+```text
+Onboarding_ID + Template_ID_Reference + Category
+```
+
+Created row values:
+
+```text
+ID                    = short generated ID
+Onboarding_ID         = Agreements_Files[Onboarding_ID]
+File Extension        = Agreements_Files[File Extension]
+File                  = blank
+Prefix                = Agreements_Files[Prefix] or File_Name_Prefix
+Category              = Agreement
+Date_Created          = today
+File_status           = Waiting for upload
+Template_ID_Reference = Agreements_Files[Template_ID_Reference]
+```
 
 ## Template placeholders
 

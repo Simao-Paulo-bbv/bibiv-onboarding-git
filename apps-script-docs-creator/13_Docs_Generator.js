@@ -9,7 +9,8 @@ const DOCGEN_TABLES = {
   MAIN: "BIBIV_onboarding_APP",
   AGREEMENTS_FILES: "Agreements_Files",
   DOC_TEMPLATES: "Doc_Templates",
-  GENERATION_JOB_ITEMS: "Generation_Job_Items"
+  GENERATION_JOB_ITEMS: "Generation_Job_Items",
+  SIGNED_DOCUMENTS: "Signed_Documents"
 };
 
 const DOCGEN_RUNTIME_CACHE = {
@@ -116,6 +117,7 @@ function processDocGenerationJob_(runId, args) {
 
     batchMarkAgreementFilesReady_(runId, readyFileUpdates);
     batchMarkGenerationJobItemsCreated_(runId, readyJobItemUpdates);
+    createSignedDocumentUploadRowsForReadyAgreements_(runId, files, readyFileUpdates);
     finishMainRowsWhenAllAgreementsReady_(runId, files, args, readyFileUpdates);
 
     const failed = results.filter(r => !r.ok);
@@ -854,6 +856,91 @@ function batchMarkGenerationJobItemsCreated_(runId, rows) {
   const cleanRows = (rows || []).filter(row => row && row.Job_Item_ID);
   if (!cleanRows.length) return;
   callAppSheetRows_(runId, DOCGEN_TABLES.GENERATION_JOB_ITEMS, cleanRows, CONFIG.APPSHEET_ACTION_EDIT, "batch-job-items-created");
+}
+
+function createSignedDocumentUploadRowsForReadyAgreements_(runId, processedFiles, readyFileUpdates) {
+  const readyIds = {};
+  (readyFileUpdates || []).forEach(row => {
+    if (row && row.ID) readyIds[String(row.ID)] = true;
+  });
+  if (!Object.keys(readyIds).length) return;
+
+  const candidateRows = (processedFiles || []).filter(fileRow => {
+    const id = String(getField_(fileRow, "ID") || "");
+    const category = String(getField_(fileRow, "Category") || "");
+    const templateId = String(getField_(fileRow, "Template_ID_Reference") || "").trim();
+    return readyIds[id] && category === CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY && templateId !== "";
+  });
+  if (!candidateRows.length) return;
+
+  const existingKeys = findExistingSignedDocumentKeys_(runId, candidateRows);
+  const rowsToAdd = [];
+  candidateRows.forEach(fileRow => {
+    const onboardingId = String(getField_(fileRow, "Onboarding_ID") || "").trim();
+    const category = String(getField_(fileRow, "Category") || CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY).trim();
+    const templateId = String(getField_(fileRow, "Template_ID_Reference") || "").trim();
+    const key = buildSignedDocumentDedupeKey_(onboardingId, templateId, category);
+    if (!onboardingId || !templateId || existingKeys[key]) return;
+
+    existingKeys[key] = true;
+    rowsToAdd.push(buildSignedDocumentUploadRow_(fileRow, onboardingId, category, templateId));
+  });
+
+  if (!rowsToAdd.length) {
+    log_(runId, "INFO", "SIGNED_DOCS_UPLOAD_ROWS_ALREADY_EXIST", { candidates: candidateRows.length });
+    return;
+  }
+
+  callAppSheetRows_(runId, DOCGEN_TABLES.SIGNED_DOCUMENTS, rowsToAdd, CONFIG.APPSHEET_ACTION_ADD, "batch-signed-doc-upload-rows");
+  log_(runId, "INFO", "SIGNED_DOCS_UPLOAD_ROWS_CREATED", { rows: rowsToAdd.length });
+}
+
+function findExistingSignedDocumentKeys_(runId, fileRows) {
+  const onboardingIds = {};
+  (fileRows || []).forEach(row => {
+    const id = String(getField_(row, "Onboarding_ID") || "").trim();
+    if (id) onboardingIds[id] = true;
+  });
+
+  const out = {};
+  Object.keys(onboardingIds).forEach(onboardingId => {
+    const selector = 'FILTER("' + DOCGEN_TABLES.SIGNED_DOCUMENTS + '", AND(' +
+      "[Onboarding_ID] = " + appSheetQuote_(onboardingId) + ", " +
+      "[Category] = " + appSheetQuote_(CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY) +
+      "))";
+    const rows = callAppSheetFind_(runId, DOCGEN_TABLES.SIGNED_DOCUMENTS, selector);
+    rows.forEach(row => {
+      const existingOnboardingId = String(getField_(row, "Onboarding_ID") || onboardingId).trim();
+      const templateId = String(getField_(row, "Template_ID_Reference") || "").trim();
+      const category = String(getField_(row, "Category") || CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY).trim();
+      if (existingOnboardingId && templateId && category) {
+        out[buildSignedDocumentDedupeKey_(existingOnboardingId, templateId, category)] = true;
+      }
+    });
+  });
+  return out;
+}
+
+function buildSignedDocumentUploadRow_(fileRow, onboardingId, category, templateId) {
+  return {
+    ID: makeShortId_(),
+    Onboarding_ID: onboardingId,
+    "File Extension": getField_(fileRow, "File Extension") || getField_(fileRow, "File_Extension") || ".pdf",
+    File: "",
+    Prefix: getField_(fileRow, "Prefix") || getField_(fileRow, "File_Name_Prefix") || "",
+    Category: category,
+    Date_Created: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd"),
+    File_status: CONFIG.DOC_GENERATOR.SIGNED_DOCUMENT_STATUS_WAITING,
+    Template_ID_Reference: templateId
+  };
+}
+
+function buildSignedDocumentDedupeKey_(onboardingId, templateId, category) {
+  return [onboardingId, templateId, category].map(v => String(v || "").trim()).join("|");
+}
+
+function makeShortId_() {
+  return Utilities.getUuid().replace(/-/g, "").slice(0, 8);
 }
 
 function finishMainRowsWhenAllAgreementsReady_(runId, processedFiles, args, readyFileUpdates) {
