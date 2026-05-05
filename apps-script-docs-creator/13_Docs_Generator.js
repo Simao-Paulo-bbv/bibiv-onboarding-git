@@ -36,6 +36,32 @@ function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId
 }
 
 function processNextQueuedDocGenerationJob() {
+  return processQueuedDocGenerationJobs_({});
+}
+
+function generateAgreementFilesFromAppSheetInlineStart(onboardingId, jobId, agreementFileId) {
+  const runId = makeRunId_();
+  const queued = generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId);
+  try {
+    const inlineResult = processQueuedDocGenerationJobs_({
+      maxFilesPerRun: Number(CONFIG.DOC_GENERATOR.INLINE_START_MAX_FILES_PER_RUN || 2),
+      maxWorkerRuntimeMs: Number(CONFIG.DOC_GENERATOR.INLINE_START_MAX_WORKER_RUNTIME_MS || 70000),
+      minRemainingMs: Number(CONFIG.DOC_GENERATOR.INLINE_START_MIN_REMAINING_MS || 15000)
+    });
+    return Object.assign({}, queued, { inlineStarted: true, inlineResult: inlineResult });
+  } catch (e) {
+    log_(runId, "WARN", "DOCGEN_INLINE_START_FAILED_CONTINUING_AS_QUEUED", {
+      error: String(e && e.message || e).slice(0, 900)
+    });
+    return Object.assign({}, queued, {
+      inlineStarted: false,
+      inlineError: String(e && e.message || e).slice(0, 900)
+    });
+  }
+}
+
+function processQueuedDocGenerationJobs_(options) {
+  options = options || {};
   const runId = makeRunId_();
   const workerStartedAt = Date.now();
   const globalLock = tryAcquireGlobalGenerationLock_(runId);
@@ -61,7 +87,7 @@ function processNextQueuedDocGenerationJob() {
       claimKey = claimDocGenerationJob_(runId, args);
       let result;
       try {
-        result = processDocGenerationJob_(runId, args, workerStartedAt);
+        result = processDocGenerationJob_(runId, args, workerStartedAt, options);
         workerResults.push(result);
       } catch (err) {
         requeueDocGenerationJobAfterFailure_(runId, args, err);
@@ -80,7 +106,7 @@ function processNextQueuedDocGenerationJob() {
         };
       }
 
-      if (shouldYieldDocGenerationWorker_(workerStartedAt)) {
+      if (shouldYieldDocGenerationWorker_(workerStartedAt, options)) {
         ensureDocGenerationQueueTrigger();
         log_(runId, "INFO", "DOCGEN_WORKER_YIELDING", {
           processedJobs: workerResults.length,
@@ -100,7 +126,8 @@ function processNextQueuedDocGenerationJob() {
   }
 }
 
-function processDocGenerationJob_(runId, args, workerStartedAt) {
+function processDocGenerationJob_(runId, args, workerStartedAt, options) {
+  options = options || {};
   const jobStartedAt = Date.now();
   log_(runId, "INFO", "DOCGEN_START", args);
 
@@ -110,8 +137,9 @@ function processDocGenerationJob_(runId, args, workerStartedAt) {
     return { ok: true, processed: 0, message: "No pending Agreement files." };
   }
 
-  const maxFiles = Math.max(1, Number(CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN || 3));
-  const filesToProcess = selectFilesForThisPass_(runId, files, maxFiles, workerStartedAt);
+  const configuredMaxFiles = options.maxFilesPerRun || CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN || 3;
+  const maxFiles = Math.max(1, Number(configuredMaxFiles));
+  const filesToProcess = selectFilesForThisPass_(runId, files, maxFiles, workerStartedAt, options);
   const shouldContinue = files.length > filesToProcess.length;
   const mainRowsById = {};
   const templateRowsById = preloadTemplateRowsForFiles_(runId, filesToProcess);
@@ -208,11 +236,11 @@ function processDocGenerationJob_(runId, args, workerStartedAt) {
   };
 }
 
-function selectFilesForThisPass_(runId, files, maxFiles, workerStartedAt) {
+function selectFilesForThisPass_(runId, files, maxFiles, workerStartedAt, options) {
   const selected = [];
   const limit = Math.max(1, Number(maxFiles || 1));
   for (let i = 0; i < files.length && selected.length < limit; i++) {
-    if (selected.length > 0 && shouldYieldDocGenerationWorker_(workerStartedAt)) {
+    if (selected.length > 0 && shouldYieldDocGenerationWorker_(workerStartedAt, options)) {
       log_(runId, "INFO", "DOCGEN_CHUNK_TIME_BUDGET_REACHED", {
         selected: selected.length,
         pendingAtStart: files.length
@@ -224,9 +252,10 @@ function selectFilesForThisPass_(runId, files, maxFiles, workerStartedAt) {
   return selected;
 }
 
-function shouldYieldDocGenerationWorker_(startedAt) {
-  const maxRuntime = Number(CONFIG.DOC_GENERATOR.MAX_WORKER_RUNTIME_MS || 300000);
-  const minRemaining = Number(CONFIG.DOC_GENERATOR.MIN_REMAINING_MS_FOR_NEXT_CHUNK || 90000);
+function shouldYieldDocGenerationWorker_(startedAt, options) {
+  options = options || {};
+  const maxRuntime = Number(options.maxWorkerRuntimeMs || CONFIG.DOC_GENERATOR.MAX_WORKER_RUNTIME_MS || 300000);
+  const minRemaining = Number(options.minRemainingMs || CONFIG.DOC_GENERATOR.MIN_REMAINING_MS_FOR_NEXT_CHUNK || 90000);
   return Date.now() - Number(startedAt || Date.now()) >= Math.max(1, maxRuntime - minRemaining);
 }
 
