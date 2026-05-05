@@ -1,18 +1,16 @@
 function auditAgreementTemplatePlaceholders() {
-  const templateIds = [
-    "1GnZM7kU2l2CzWBnSI2Z1VCL03VZarh6cO0_vxQVVLTU",
-    "1KEUT-51DRypLNgXwSX7-eRkdZQvyRaEx2CGj05hi21s",
-    "1AR2NkizWPcazbQFAAj9W89m4ZBnQS_wv2VIoYoLIkBg",
-    "1aruVKM0vlyvcMfOFkZsKLL-RqsBxyMJqvwYKchkgH0Q",
-    "1r8hZukGAlg7V0O8mk2v3SdTfgu1CL1PpMrv2MpQ8dBc"
-  ];
+  const runId = makeRunId_();
+  const templateRows = findAgreementTemplateRowsForAudit_(runId);
 
-  const result = templateIds.map(id => {
+  const result = templateRows.map(row => {
+    const id = String(getField_(row, "Template_ID") || "").trim();
     const doc = DocumentApp.openById(id);
     const text = getPrimaryDocumentSections_(doc).map(section => section.getText()).join("\n");
     const placeholders = uniqueMatches_(text, /<<[\s\S]*?>>/g);
     return {
       id: id,
+      category: getField_(row, "Category"),
+      prefix: getField_(row, "File_Name_Prefix"),
       name: DriveApp.getFileById(id).getName(),
       placeholders: placeholders
     };
@@ -20,6 +18,26 @@ function auditAgreementTemplatePlaceholders() {
 
   console.log(JSON.stringify(result, null, 2));
   return result;
+}
+
+function findAgreementTemplateRowsForAudit_(runId) {
+  const rows = findRowsFromSheet_(runId, DOCGEN_TABLES.DOC_TEMPLATES, row => {
+    const id = String(getField_(row, "Template_ID") || "").trim();
+    const category = String(getField_(row, "Category") || "").trim();
+    const active = String(getField_(row, "Is_Active") || "").trim().toLowerCase();
+    const isActive = active === "" || active === "true" || active === "yes" || active === "y" || active === "1";
+    return id && category === CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY && isActive;
+  });
+
+  if (rows) return rows;
+
+  const selector = 'FILTER("' + DOCGEN_TABLES.DOC_TEMPLATES + '", AND(' +
+    "[Category] = " + appSheetQuote_(CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY) +
+    "))";
+  return callAppSheetFind_(runId, DOCGEN_TABLES.DOC_TEMPLATES, selector).filter(row => {
+    const active = String(getField_(row, "Is_Active") || "").trim().toLowerCase();
+    return active === "" || active === "true" || active === "yes" || active === "y" || active === "1";
+  });
 }
 
 function uniqueMatches_(text, pattern) {
