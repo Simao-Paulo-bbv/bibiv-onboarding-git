@@ -34,6 +34,7 @@ function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId
 
 function processNextQueuedDocGenerationJob() {
   const runId = makeRunId_();
+  const workerStartedAt = Date.now();
   const globalLock = tryAcquireGlobalGenerationLock_(runId);
   if (!globalLock) {
     log_(runId, "INFO", "DOCGEN_WORKER_BUSY", {});
@@ -41,24 +42,55 @@ function processNextQueuedDocGenerationJob() {
   }
 
   let claimKey = "";
+  const workerResults = [];
   try {
-    const args = dequeueDocGenerationJob_(runId);
-    if (!args) {
-      log_(runId, "INFO", "DOCGEN_QUEUE_EMPTY", {});
-      deleteTriggersForHandler_("processNextQueuedDocGenerationJob");
-      return { ok: true, empty: true };
-    }
+    while (true) {
+      const args = dequeueDocGenerationJob_(runId);
+      if (!args) {
+        log_(runId, "INFO", "DOCGEN_QUEUE_EMPTY", {
+          processedJobs: workerResults.length,
+          elapsedMs: Date.now() - workerStartedAt
+        });
+        deleteTriggersForHandler_("processNextQueuedDocGenerationJob");
+        return { ok: true, empty: true, results: workerResults };
+      }
 
-    claimKey = claimDocGenerationJob_(runId, args);
-    let result;
-    try {
-      result = processDocGenerationJob_(runId, args);
-    } catch (err) {
-      requeueDocGenerationJobAfterFailure_(runId, args, err);
-      throw err;
+      claimKey = claimDocGenerationJob_(runId, args);
+      let result;
+      try {
+        result = processDocGenerationJob_(runId, args);
+        workerResults.push(result);
+      } catch (err) {
+        requeueDocGenerationJobAfterFailure_(runId, args, err);
+        throw err;
+      } finally {
+        releaseDocGenerationJob_(claimKey);
+        claimKey = "";
+      }
+
+      if (!queueHasItems_()) {
+        deleteTriggersForHandler_("processNextQueuedDocGenerationJob");
+        return {
+          ok: workerResults.every(item => item && item.ok),
+          processedJobs: workerResults.length,
+          results: workerResults
+        };
+      }
+
+      if (shouldYieldDocGenerationWorker_(workerStartedAt)) {
+        ensureDocGenerationQueueTrigger();
+        log_(runId, "INFO", "DOCGEN_WORKER_YIELDING", {
+          processedJobs: workerResults.length,
+          elapsedMs: Date.now() - workerStartedAt
+        });
+        return {
+          ok: workerResults.every(item => item && item.ok),
+          queued: true,
+          processedJobs: workerResults.length,
+          results: workerResults
+        };
+      }
     }
-    if (queueHasItems_()) ensureDocGenerationQueueTrigger();
-    return result;
   } finally {
     releaseDocGenerationJob_(claimKey);
     releaseGlobalGenerationLock_(globalLock);
@@ -66,6 +98,7 @@ function processNextQueuedDocGenerationJob() {
 }
 
 function processDocGenerationJob_(runId, args) {
+  const jobStartedAt = Date.now();
   log_(runId, "INFO", "DOCGEN_START", args);
 
   const files = findPendingAgreementFileRows_(runId, args);
@@ -139,10 +172,18 @@ function processDocGenerationJob_(runId, args) {
   createSignedDocumentUploadRowsForReadyAgreements_(runId, filesToProcess, readyFileUpdates);
   batchMarkAgreementFilesReady_(runId, readyFileUpdates);
   batchMarkGenerationJobItemsCreated_(runId, readyJobItemUpdates);
-  finishMainRowsWhenAllAgreementsReady_(runId, filesToProcess, args, readyFileUpdates);
+  if (!shouldContinue) {
+    finishMainRowsWhenAllAgreementsReady_(runId, filesToProcess, args, readyFileUpdates);
+  } else {
+    log_(runId, "INFO", "DOCGEN_FINALIZATION_DEFERRED", {
+      jobId: args.jobId || "",
+      onboardingId: args.onboardingId || "",
+      remainingAtStart: files.length - filesToProcess.length
+    });
+  }
 
   if (shouldContinue) {
-    enqueueDocGenerationJob_(runId, args);
+    enqueueDocGenerationJob_(runId, args, { front: true, continuation: true });
     ensureDocGenerationQueueTrigger();
     log_(runId, "INFO", "DOCGEN_CONTINUATION_ENQUEUED", {
       jobId: args.jobId || "",
@@ -156,7 +197,8 @@ function processDocGenerationJob_(runId, args) {
   log_(runId, failed.length ? "ERROR" : "INFO", "DOCGEN_DONE", {
     processed: results.length,
     failed: failed.length,
-    continuation: shouldContinue
+    continuation: shouldContinue,
+    durationMs: Date.now() - jobStartedAt
   });
 
   return {
@@ -166,6 +208,12 @@ function processDocGenerationJob_(runId, args) {
     continuation: shouldContinue,
     results: results
   };
+}
+
+function shouldYieldDocGenerationWorker_(startedAt) {
+  const maxRuntime = Number(CONFIG.DOC_GENERATOR.MAX_WORKER_RUNTIME_MS || 300000);
+  const minRemaining = Number(CONFIG.DOC_GENERATOR.MIN_REMAINING_MS_FOR_NEXT_CHUNK || 90000);
+  return Date.now() - Number(startedAt || Date.now()) >= Math.max(1, maxRuntime - minRemaining);
 }
 
 function tryAcquireGlobalGenerationLock_(runId) {
@@ -215,7 +263,7 @@ function releaseDocGenerationJob_(key) {
   }
 }
 
-function enqueueDocGenerationJob_(runId, args) {
+function enqueueDocGenerationJob_(runId, args, options) {
   const lock = LockService.getScriptLock();
   lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
   try {
@@ -226,12 +274,18 @@ function enqueueDocGenerationJob_(runId, args) {
 
     const exists = queue.some(item => (item.jobId || item.agreementFileId || item.onboardingId) === key);
     if (!exists) {
-      queue.push({
+      const item = {
         onboardingId: args.onboardingId,
         jobId: args.jobId,
         agreementFileId: args.agreementFileId,
-        queuedAt: new Date().toISOString()
-      });
+        queuedAt: new Date().toISOString(),
+        continuation: Boolean(options && options.continuation)
+      };
+      if (options && options.front) {
+        queue.unshift(item);
+      } else {
+        queue.push(item);
+      }
       writeDocGenerationQueue_(props, queue);
     }
     log_(runId, "INFO", "DOCGEN_QUEUE_STATE", { size: queue.length });
@@ -314,10 +368,13 @@ function ensureDocGenerationQueueTrigger() {
   const handler = "processNextQueuedDocGenerationJob";
   const exists = ScriptApp.getProjectTriggers().some(trigger => trigger.getHandlerFunction() === handler);
   if (exists) return;
-  ScriptApp.newTrigger(handler)
-    .timeBased()
-    .everyMinutes(CONFIG.DOC_GENERATOR.QUEUE_TRIGGER_MINUTES || 1)
-    .create();
+  const afterMs = Number(CONFIG.DOC_GENERATOR.QUEUE_TRIGGER_AFTER_MS || 0);
+  const builder = ScriptApp.newTrigger(handler).timeBased();
+  if (afterMs > 0) {
+    builder.after(afterMs).create();
+    return;
+  }
+  builder.everyMinutes(CONFIG.DOC_GENERATOR.QUEUE_TRIGGER_MINUTES || 1).create();
 }
 
 function deleteTriggersForHandler_(handler) {
@@ -387,34 +444,65 @@ function buildFallbackTemplateRow_(runId, templateId) {
 }
 
 function generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow) {
+  const startedAt = Date.now();
   const templateId = getField_(templateRow, "Template_ID");
   if (!templateId) throw new Error("Doc_Templates.Template_ID is blank.");
 
   const relativePath = normalizeRelativeDrivePath_(getField_(fileRow, "File") || buildRelativeFilePathFromRow_(fileRow));
   if (!relativePath) throw new Error("Agreements_Files.File is blank and cannot be rebuilt.");
 
-  const outputRoot = getDocGeneratorOutputRootFolder_();
-  const output = ensureFolderPathAndName_(outputRoot, relativePath);
-  const workingFolder = ensureChildFolder_(output.rootFolder, CONFIG.DOC_GENERATOR.WORKING_DOCS_FOLDER_NAME);
+  const output = timeDocgenStep_(runId, "DOCGEN_TIMING_RESOLVE_OUTPUT", {
+    agreementFileId: getField_(fileRow, "ID"),
+    templateId: templateId
+  }, () => {
+    const outputRoot = getDocGeneratorOutputRootFolder_();
+    return ensureFolderPathAndName_(outputRoot, relativePath);
+  });
+
+  const workingFolder = timeDocgenStep_(runId, "DOCGEN_TIMING_RESOLVE_WORKING_FOLDER", {
+    agreementFileId: getField_(fileRow, "ID")
+  }, () => ensureChildFolder_(output.rootFolder, CONFIG.DOC_GENERATOR.WORKING_DOCS_FOLDER_NAME));
 
   if (CONFIG.DOC_GENERATOR.OVERWRITE_EXISTING_PDF) {
-    trashExistingFilesByName_(output.folder, output.fileName);
+    timeDocgenStep_(runId, "DOCGEN_TIMING_TRASH_EXISTING", {
+      agreementFileId: getField_(fileRow, "ID")
+    }, () => trashExistingFilesByName_(output.folder, output.fileName));
   }
 
-  const sourceFile = DriveApp.getFileById(templateId);
+  const sourceFile = timeDocgenStep_(runId, "DOCGEN_TIMING_GET_TEMPLATE", {
+    agreementFileId: getField_(fileRow, "ID"),
+    templateId: templateId
+  }, () => DriveApp.getFileById(templateId));
   const docName = output.fileName.replace(/\.pdf$/i, "");
-  const docCopy = sourceFile.makeCopy(docName, workingFolder);
-  const doc = DocumentApp.openById(docCopy.getId());
+  const docCopy = timeDocgenStep_(runId, "DOCGEN_TIMING_COPY_TEMPLATE", {
+    agreementFileId: getField_(fileRow, "ID"),
+    templateId: templateId
+  }, () => sourceFile.makeCopy(docName, workingFolder));
+  const doc = timeDocgenStep_(runId, "DOCGEN_TIMING_OPEN_DOC", {
+    agreementFileId: getField_(fileRow, "ID")
+  }, () => DocumentApp.openById(docCopy.getId()));
 
-  replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow);
-  const exportTabId = getFirstDocumentTabId_(doc);
-  doc.saveAndClose();
+  timeDocgenStep_(runId, "DOCGEN_TIMING_REPLACE_PLACEHOLDERS", {
+    agreementFileId: getField_(fileRow, "ID")
+  }, () => replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow));
+  const exportTabId = timeDocgenStep_(runId, "DOCGEN_TIMING_GET_TAB", {
+    agreementFileId: getField_(fileRow, "ID")
+  }, () => getFirstDocumentTabId_(doc));
+  timeDocgenStep_(runId, "DOCGEN_TIMING_SAVE_DOC", {
+    agreementFileId: getField_(fileRow, "ID")
+  }, () => doc.saveAndClose());
 
-  const pdfBlob = exportGoogleDocTabToPdf_(docCopy.getId(), exportTabId, output.fileName);
-  const pdfFile = output.folder.createFile(pdfBlob);
+  const pdfBlob = timeDocgenStep_(runId, "DOCGEN_TIMING_EXPORT_PDF", {
+    agreementFileId: getField_(fileRow, "ID")
+  }, () => exportGoogleDocTabToPdf_(docCopy.getId(), exportTabId, output.fileName));
+  const pdfFile = timeDocgenStep_(runId, "DOCGEN_TIMING_CREATE_PDF_FILE", {
+    agreementFileId: getField_(fileRow, "ID")
+  }, () => output.folder.createFile(pdfBlob));
 
   if (!CONFIG.DOC_GENERATOR.KEEP_WORKING_DOC_COPY) {
-    docCopy.setTrashed(true);
+    timeDocgenStep_(runId, "DOCGEN_TIMING_TRASH_WORKING_DOC", {
+      agreementFileId: getField_(fileRow, "ID")
+    }, () => docCopy.setTrashed(true));
   }
 
   log_(runId, "INFO", "DOCGEN_FILE_CREATED", {
@@ -422,7 +510,8 @@ function generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow) {
     templateId: templateId,
     relativePath: relativePath,
     pdfId: pdfFile.getId(),
-    docId: docCopy.getId()
+    docId: docCopy.getId(),
+    durationMs: Date.now() - startedAt
   });
 
   return {
@@ -432,6 +521,17 @@ function generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow) {
     docId: docCopy.getId(),
     docUrl: docCopy.getUrl()
   };
+}
+
+function timeDocgenStep_(runId, eventName, data, fn) {
+  const startedAt = Date.now();
+  try {
+    return fn();
+  } finally {
+    const payload = data || {};
+    payload.durationMs = Date.now() - startedAt;
+    log_(runId, "INFO", eventName, payload);
+  }
 }
 
 function replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow) {
@@ -456,13 +556,7 @@ function replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow) {
   replaceAppSheetReferencesInTextNodes_(sections, context);
   replaceAppSheetReferences_(sections, context, values);
 
-  Object.keys(values).forEach(key => {
-    const value = stringifyDocValue_(values[key]);
-    sections.forEach(section => {
-      section.replaceText(escapeRegExp_("{{" + key + "}}"), value);
-      section.replaceText(escapeRegExp_("<<[" + key + "]>>"), value);
-    });
-  });
+  replaceLiteralValuePlaceholders_(sections, values);
 
   replaceDereferencedValues_(sections, "Onboarding_ID", mainRow);
   replaceDereferencedValues_(sections, "Template_ID_Reference", templateRow);
@@ -543,14 +637,44 @@ function addReplacementValues_(out, row, prefix) {
   });
 }
 
+function replaceLiteralValuePlaceholders_(sections, values) {
+  if (!values) return;
+  const keys = Object.keys(values);
+  if (!keys.length) return;
+
+  sections.forEach(section => {
+    const sectionText = getSectionText_(section);
+    if (sectionText.indexOf("{{") < 0 && sectionText.indexOf("<<[") < 0) return;
+
+    keys.forEach(key => {
+      const curly = "{{" + key + "}}";
+      const appSheet = "<<[" + key + "]>>";
+      if (sectionText.indexOf(curly) < 0 && sectionText.indexOf(appSheet) < 0) return;
+
+      const value = stringifyDocValue_(values[key]);
+      if (sectionText.indexOf(curly) >= 0) section.replaceText(escapeRegExp_(curly), value);
+      if (sectionText.indexOf(appSheet) >= 0) section.replaceText(escapeRegExp_(appSheet), value);
+    });
+  });
+}
+
 function replaceDereferencedValues_(sections, refName, row) {
   if (!row) return;
-  Object.keys(row).forEach(key => {
-    const value = stringifyDocValue_(row[key]);
-    sections.forEach(section => {
-      section.replaceText(escapeRegExp_("<<[" + refName + "].[" + key + "]>>"), value);
-      section.replaceText(escapeRegExp_("<<[" + refName + "]." + key + ">>"), value);
-      section.replaceText(escapeRegExp_("{{" + refName + "." + key + "}}"), value);
+  const keys = Object.keys(row);
+  sections.forEach(section => {
+    const sectionText = getSectionText_(section);
+    if (sectionText.indexOf(refName) < 0) return;
+
+    keys.forEach(key => {
+      const bracketed = "<<[" + refName + "].[" + key + "]>>";
+      const loose = "<<[" + refName + "]." + key + ">>";
+      const curly = "{{" + refName + "." + key + "}}";
+      if (sectionText.indexOf(bracketed) < 0 && sectionText.indexOf(loose) < 0 && sectionText.indexOf(curly) < 0) return;
+
+      const value = stringifyDocValue_(row[key]);
+      if (sectionText.indexOf(bracketed) >= 0) section.replaceText(escapeRegExp_(bracketed), value);
+      if (sectionText.indexOf(loose) >= 0) section.replaceText(escapeRegExp_(loose), value);
+      if (sectionText.indexOf(curly) >= 0) section.replaceText(escapeRegExp_(curly), value);
     });
   });
 }

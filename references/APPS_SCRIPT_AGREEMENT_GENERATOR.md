@@ -39,7 +39,7 @@ The time-driven worker does the real generation:
 processNextQueuedDocGenerationJob()
 ```
 
-The worker is created automatically by `ensureDocGenerationQueueTrigger()` and runs every minute. It processes one queued `Job_ID` per execution, in safe chunks controlled by `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN`.
+The worker is created automatically by `ensureDocGenerationQueueTrigger()`. It uses a short one-shot trigger and then drains the queue within a safe runtime budget. A `Job_ID` is still processed in chunks controlled by `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN`, but continuation chunks for the same job are put back at the front of the queue and are picked up immediately by the same worker while time remains.
 
 Recommended AppSheet parameters:
 
@@ -288,12 +288,14 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 Current optimizations:
 
 - `Doc_Templates` rows are preloaded with one AppSheet `Find` per job.
-- Each worker execution processes at most `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN` files. This prevents Apps Script timeout on larger agreement packs and resumes the same `Job_ID` on the next trigger.
+- Each chunk processes at most `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN` files. The worker immediately continues with the same `Job_ID` while its runtime budget allows, then schedules a short one-shot continuation trigger if it must yield before timeout.
 - Rows stuck in `Generating` after a timeout are included in the next retry pass.
 - `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
+- Placeholder replacement avoids scanning the document for fields that are not present in the template.
+- Timing logs named `DOCGEN_TIMING_*` identify whether slow runs are spending time in Drive copy, Docs open/save, placeholder replacement, PDF export, or file creation.
 - Working Google Docs copies are trashed after PDF export by default (`KEEP_WORKING_DOC_COPY=false`).
 - PDF export targets the first Google Docs tab by URL (`export?format=pdf&tab=...`) to avoid the Docs Tabs cover page.
-- Jobs are serialized through a script-property queue and 1-minute worker trigger, so one onboarding finishes and can send mail before the next starts.
+- Jobs are serialized through a script-property queue. Continuation for the active onboarding is prioritized ahead of later queued jobs so one NIP/Onboarding_ID can finish and send mail before the next starts.
 
 Remaining bottleneck: each PDF still requires a Google Docs template copy, text replacement, save, and PDF export. That is the slowest part and cannot be made instant without moving to pre-rendered/static PDFs or a lower-fidelity HTML/PDF renderer.
