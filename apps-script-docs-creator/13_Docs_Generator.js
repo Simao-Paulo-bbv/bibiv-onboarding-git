@@ -15,7 +15,8 @@ const DOCGEN_TABLES = {
 
 const DOCGEN_RUNTIME_CACHE = {
   projectRootFolder: null,
-  folderByPath: {}
+  folderByPath: {},
+  dataSpreadsheet: null
 };
 
 function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId) {
@@ -126,12 +127,7 @@ function processDocGenerationJob_(runId, args) {
       if (!templateId) throw new Error("Missing Template_ID_Reference.");
 
       if (!mainRowsById[fileOnboardingId]) {
-        mainRowsById[fileOnboardingId] = findRequiredSingleRow_(
-          runId,
-          DOCGEN_TABLES.MAIN,
-          "[ID] = " + appSheetQuote_(fileOnboardingId),
-          "main onboarding row " + fileOnboardingId
-        );
+        mainRowsById[fileOnboardingId] = findMainOnboardingRow_(runId, fileOnboardingId);
       }
 
       const templateRow = templateRowsById[templateId] || buildFallbackTemplateRow_(runId, templateId);
@@ -384,6 +380,9 @@ function deleteTriggersForHandler_(handler) {
 }
 
 function findPendingAgreementFileRows_(runId, args) {
+  const sheetRows = findPendingAgreementFileRowsFromSheet_(runId, args);
+  if (sheetRows && sheetRows.length) return sheetRows;
+
   const parts = [
     "IN([File_status], LIST(" +
       appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_SET_UP) + ", " +
@@ -419,6 +418,16 @@ function preloadTemplateRowsForFiles_(runId, files) {
 
   if (!ids.length) return {};
 
+  const sheetRows = findRowsByValuesFromSheet_(runId, DOCGEN_TABLES.DOC_TEMPLATES, "Template_ID", ids);
+  if (sheetRows) {
+    const fromSheet = {};
+    sheetRows.forEach(row => {
+      const id = getField_(row, "Template_ID");
+      if (id) fromSheet[id] = row;
+    });
+    return fromSheet;
+  }
+
   const selector = 'FILTER("' + DOCGEN_TABLES.DOC_TEMPLATES + '", OR(' +
     ids.map(id => "[Template_ID] = " + appSheetQuote_(id)).join(", ") +
     "))";
@@ -429,6 +438,114 @@ function preloadTemplateRowsForFiles_(runId, files) {
     if (id) out[id] = row;
   });
   return out;
+}
+
+function findMainOnboardingRow_(runId, onboardingId) {
+  const cleanId = String(onboardingId || "").trim();
+  const sheetRows = findRowsByValuesFromSheet_(runId, DOCGEN_TABLES.MAIN, "ID", [cleanId]);
+  if (sheetRows && sheetRows.length) return sheetRows[0];
+
+  return findRequiredSingleRow_(
+    runId,
+    DOCGEN_TABLES.MAIN,
+    "[ID] = " + appSheetQuote_(cleanId),
+    "main onboarding row " + cleanId
+  );
+}
+
+function findPendingAgreementFileRowsFromSheet_(runId, args) {
+  const allowedStatuses = {};
+  [
+    CONFIG.DOC_GENERATOR.FILE_STATUS_SET_UP,
+    CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATING,
+    CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED
+  ].forEach(status => {
+    allowedStatuses[String(status || "").trim()] = true;
+  });
+
+  return findRowsFromSheet_(runId, DOCGEN_TABLES.AGREEMENTS_FILES, row => {
+    const status = String(getField_(row, "File_status") || "").trim();
+    const category = String(getField_(row, "Category") || "").trim();
+    if (!allowedStatuses[status] || category !== CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY) return false;
+
+    if (args.jobId) return String(getField_(row, "Job_ID") || "").trim() === args.jobId;
+    if (args.onboardingId) return String(getField_(row, "Onboarding_ID") || "").trim() === args.onboardingId;
+    if (args.agreementFileId) return String(getField_(row, "ID") || "").trim() === args.agreementFileId;
+    throw new Error("Pass at least Job_ID, Onboarding_ID, or Agreements_Files ID.");
+  });
+}
+
+function findRowsByValuesFromSheet_(runId, tableName, keyColumn, values) {
+  const wanted = {};
+  (values || []).forEach(value => {
+    const clean = String(value || "").trim();
+    if (clean) wanted[clean] = true;
+  });
+  if (!Object.keys(wanted).length) return [];
+
+  return findRowsFromSheet_(runId, tableName, row => wanted[String(getField_(row, keyColumn) || "").trim()]);
+}
+
+function findRowsFromSheet_(runId, tableName, predicate) {
+  if (!CONFIG.DOC_GENERATOR.USE_SHEET_READS) return null;
+
+  const sheetName = getSheetNameForDocgenTable_(tableName);
+  if (!sheetName) return null;
+
+  try {
+    const ss = getDocGeneratorDataSpreadsheet_();
+    if (!ss) return null;
+
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      log_(runId, "WARN", "DOCGEN_SHEET_READ_NO_SHEET", { tableName: tableName, sheetName: sheetName });
+      return null;
+    }
+
+    const values = sheet.getDataRange().getValues();
+    if (values.length < 2) {
+      log_(runId, "INFO", "DOCGEN_SHEET_FIND", { tableName: tableName, sheetName: sheetName, rows: 0 });
+      return [];
+    }
+
+    const headers = values[0].map(header => String(header || "").trim());
+    const rows = [];
+    for (let r = 1; r < values.length; r++) {
+      const row = {};
+      headers.forEach((header, c) => {
+        if (header) row[header] = values[r][c];
+      });
+      if (!predicate || predicate(row)) rows.push(row);
+    }
+
+    log_(runId, "INFO", "DOCGEN_SHEET_FIND", {
+      tableName: tableName,
+      sheetName: sheetName,
+      rows: rows.length
+    });
+    return rows;
+  } catch (e) {
+    log_(runId, "WARN", "DOCGEN_SHEET_FIND_FALLBACK", {
+      tableName: tableName,
+      sheetName: sheetName,
+      error: String(e && e.message || e).slice(0, 900)
+    });
+    return null;
+  }
+}
+
+function getSheetNameForDocgenTable_(tableName) {
+  const map = CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES || {};
+  return String(map[tableName] || tableName || "").trim();
+}
+
+function getDocGeneratorDataSpreadsheet_() {
+  const id = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
+  if (!id) return null;
+  if (!DOCGEN_RUNTIME_CACHE.dataSpreadsheet) {
+    DOCGEN_RUNTIME_CACHE.dataSpreadsheet = SpreadsheetApp.openById(id);
+  }
+  return DOCGEN_RUNTIME_CACHE.dataSpreadsheet;
 }
 
 function buildFallbackTemplateRow_(runId, templateId) {

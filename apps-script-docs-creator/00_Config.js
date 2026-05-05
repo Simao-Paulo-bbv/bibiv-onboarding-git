@@ -9,6 +9,15 @@ const CONFIG = {
   APPSHEET_ACTION_EDIT: "Edit",
   DOC_GENERATOR: {
     OUTPUT_ROOT_FOLDER_ID: "1iHYmHQCpA4IHEfnjrV7okk3sqjw6MkOd",
+    DATA_SPREADSHEET_ID: "1EaefdCq8vT6QZO6fxazxGZXBiReR1Y7zZ4FA7tdwebA",
+    USE_SHEET_READS: true,
+    TABLE_SHEET_NAMES: {
+      BIBIV_onboarding_APP: "Sheet1",
+      Agreements_Files: "Agreements_Files",
+      Doc_Templates: "Doc_Templates",
+      Generation_Job_Items: "Generation_Job_Items",
+      Signed_Documents: "Signed_Documents"
+    },
     FILE_ROOT_FOLDER_NAMES: ["Files_Agreements_", "Files_Application_"],
     AGREEMENT_CATEGORY: "Agreement",
     FILE_STATUS_SET_UP: "Set Up",
