@@ -54,7 +54,7 @@ Agreements_Files (the file-factory input table)
       │       in standalone script BIBIV_Onboarding_DocsCreator.
       │       That call only enqueues the Job_ID. A 1-minute dispatcher
       │       processNextQueuedDocGenerationJob creates per-file tasks
-      │       for one active Job_ID at a time:
+      │       for one active Job_ID at a time and starts the first batch inline:
       │       bounded workers copy Google Docs templates from Doc_Templates[Template_ID],
       │       fill placeholders, export the first Docs tab to PDF, and write to Drive.
       │       The finalizer verifies physical PDFs in Drive, creates
@@ -104,7 +104,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 4. **Deterministic PersonID** — `"P_" + base64(SHA256(onboardingId|role|fullName)).slice(0,22)`. Same person always gets the same key across re-imports.
 5. **Folder paths in AppSheet** — `Folder_Path` is a constant root (`Files_Application_` or `Files_Agreements_`); NIP is a separate subfolder; formulas always use explicit `"/"` separators.
 6. **No `LOOKUP(USEREMAIL(), …)` for record context** — abandoned; caused cross-user record mixing. Always carry context via `Generation_Jobs[Onboarding_ID]` → `Generation_Job_Items` → `Agreements_Files`.
-7. **Agreement generator is queue-backed** — AppSheet must enqueue via `generateAgreementFilesFromAppSheet`; the dispatcher creates per-file tasks for one active `Job_ID` at a time, bounded workers generate PDFs inside that active job, and the finalizer is the only step that writes `Ready` after verifying the physical PDFs exist in Drive, so mail cannot send before the complete document set exists.
+7. **Agreement generator is queue-backed** — AppSheet must enqueue via `generateAgreementFilesFromAppSheet`; the dispatcher creates per-file tasks for one active `Job_ID` at a time and starts the first batch inline, bounded workers generate PDFs inside that active job, and the finalizer is the only step that writes `Ready` after verifying the physical PDFs exist in Drive, so mail cannot send before the complete document set exists.
 8. **REGON hard failures require humans** — persistent `MF_REGON_BLOCK` rows are moved to `Status = "need verification"` and are not retried forever.
 9. **`name_api` refresh is isolated** — `runRefreshNameApiOnly()` updates only `name_api` from REGON/GOV. It must not run import/AppSheet/People/bank logic.
 10. **GOV enrichment status gate** — regular GOV/MF enrichment runs only while `Status = "Init"`; later AppSheet workflow/status changes must not re-run GOV or overwrite `name_api`.

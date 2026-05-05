@@ -51,6 +51,7 @@ Default parallelism is intentionally low and scoped to one active generation job
 
 ```text
 CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM = 2
+CONFIG.DOC_GENERATOR.FILE_WORKER_BATCH_MAX_ITEMS = 7
 ```
 
 The active unit is `Job_ID` first, with `Onboarding_ID` as fallback. This keeps parallelism inside one onboarding/NIP package instead of spreading worker time across many different NIPs.
@@ -311,6 +312,8 @@ Current optimizations:
 
 - Jobs are dispatched quickly and the slow Google Docs copy/export work runs in bounded per-file workers.
 - `FILE_WORKER_PARALLELISM = 2` lets one active onboarding/job generate two PDFs at a time without unbounded trigger fan-out.
+- A worker processes a batch of files from the active job, not just one file, so the remaining files do not wait for repeated 1-minute trigger delays.
+- Dispatcher starts the first worker batch inline right after enqueueing tasks, so generation begins immediately when the job is picked up.
 - `DOCGEN_ACTIVE_JOB` blocks dispatching the next queued job until the current job finalizer has written `Ready` for the complete file set.
 - Finalizer verifies the physical PDF exists in Drive; a prefilled `Agreements_Files[File]` path alone is never enough to mark a row `Ready`.
 - `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.

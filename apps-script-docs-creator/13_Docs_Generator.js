@@ -87,6 +87,9 @@ function processDocGenerationJob_(runId, args) {
   const dispatched = enqueueAgreementFileTasks_(runId, args, files);
   enqueueAgreementFinalizer_(runId, args);
   ensureAgreementFileWorkerTriggers_(dispatched);
+  if (dispatched > 0) {
+    processAgreementFileTaskBatch_(runId, "dispatcher-inline");
+  }
   ensureAgreementFinalizerTrigger_();
 
   log_(runId, "INFO", "DOCGEN_DISPATCHED_FILE_TASKS", {
@@ -289,34 +292,61 @@ function requeueDocGenerationJobAfterFailure_(runId, args, err) {
 
 function processNextAgreementFileTask() {
   const runId = makeRunId_();
-  const task = dequeueAgreementFileTask_(runId);
-  if (!task) {
-    log_(runId, "INFO", "DOCGEN_FILE_TASK_QUEUE_EMPTY", {});
-    return { ok: true, empty: true };
+  return processAgreementFileTaskBatch_(runId, "trigger");
+}
+
+function processAgreementFileTaskBatch_(runId, source) {
+  const startedAt = Date.now();
+  const maxItems = Math.max(1, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_BATCH_MAX_ITEMS || 7));
+  const maxRuntimeMs = Math.max(30000, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_MAX_RUNTIME_MS || 300000));
+  const results = [];
+
+  while (results.length < maxItems && Date.now() - startedAt < maxRuntimeMs) {
+    const task = dequeueAgreementFileTask_(runId);
+    if (!task) {
+      log_(runId, "INFO", "DOCGEN_FILE_TASK_QUEUE_EMPTY", {
+        source: source || "",
+        processed: results.length
+      });
+      break;
+    }
+
+    const result = processSingleAgreementFileTaskWithGuards_(runId, task);
+    results.push(result);
   }
 
+  const hasMoreTasks = agreementFileTaskQueueHasItems_();
+  if (hasMoreTasks) ensureAgreementFileWorkerTriggers_(1);
+  if (!hasMoreTasks) ensureAgreementFinalizerTrigger_();
+  log_(runId, "INFO", "DOCGEN_FILE_TASK_BATCH_DONE", {
+    source: source || "",
+    processed: results.length,
+    remaining: readAgreementFileTaskQueue_(PropertiesService.getScriptProperties()).length
+  });
+
+  return { ok: results.every(result => result.ok !== false), processed: results.length, results: results };
+}
+
+function processSingleAgreementFileTaskWithGuards_(runId, task) {
   let claimKey = "";
   try {
     const active = getActiveDocGenerationJob_(runId);
     if (active && docGenerationJobKey_(task) !== active.key) {
       requeueAgreementFileTask_(runId, task, "active-job-mismatch");
-      ensureAgreementFileWorkerTriggers_(1);
       log_(runId, "INFO", "DOCGEN_FILE_TASK_WAITING_FOR_ACTIVE_JOB", {
         taskKey: docGenerationJobKey_(task),
         activeKey: active.key
       });
-      return { ok: true, waiting: true };
+      return { ok: true, waiting: true, agreementFileId: task.agreementFileId || "" };
     }
 
     claimKey = claimAgreementFileTask_(runId, task);
     const result = processAgreementFileTask_(runId, task);
     enqueueAgreementFinalizer_(runId, task);
-    ensureAgreementFinalizerTrigger_();
     return result;
   } catch (err) {
     requeueAgreementFileTaskAfterFailure_(runId, task, err);
     enqueueAgreementFinalizer_(runId, task);
-    ensureAgreementFinalizerTrigger_();
     log_(runId, "ERROR", "DOCGEN_FILE_TASK_FAILED", {
       agreementFileId: task.agreementFileId || "",
       error: String(err && err.message || err).slice(0, 900)
@@ -324,7 +354,6 @@ function processNextAgreementFileTask() {
     return { ok: false, agreementFileId: task.agreementFileId || "", error: String(err && err.message || err) };
   } finally {
     releaseDocGenerationJob_(claimKey);
-    if (agreementFileTaskQueueHasItems_()) ensureAgreementFileWorkerTriggers_(1);
   }
 }
 
@@ -655,8 +684,7 @@ function ensureDocGenerationQueueTrigger() {
 function ensureAgreementFileWorkerTriggers_(taskCount) {
   const handler = "processNextAgreementFileTask";
   const parallelism = Math.max(1, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM || 2));
-  const existing = countTriggersForHandler_(handler);
-  const count = Math.min(Math.max(1, Number(taskCount || 1)), Math.max(0, parallelism - existing));
+  const count = Math.min(Math.max(1, Number(taskCount || 1)), parallelism);
   for (let i = 0; i < count; i++) {
     ScriptApp.newTrigger(handler).timeBased().after(1).create();
   }
