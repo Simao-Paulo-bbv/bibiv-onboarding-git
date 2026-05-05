@@ -87,6 +87,7 @@ function processNextQueuedDocGenerationJob() {
     const args = dequeueDocGenerationJob_(runId);
     if (!args) {
       log_(runId, "INFO", "DOCGEN_QUEUE_EMPTY", {});
+      deleteTriggersForHandler_("processNextQueuedDocGenerationJob");
       return { ok: true, empty: true };
     }
 
@@ -570,7 +571,11 @@ function finalizeAgreementJobIfComplete_(runId, task) {
   });
 
   clearActiveDocGenerationJob_(runId, task);
-  if (queueHasItems_()) ensureDocGenerationQueueTrigger();
+  if (queueHasItems_()) {
+    ensureDocGenerationQueueTrigger();
+  } else {
+    deleteTriggersForHandler_("processNextQueuedDocGenerationJob");
+  }
 
   return { ok: true, complete: true, readyFiles: readyFileUpdates.length };
 }

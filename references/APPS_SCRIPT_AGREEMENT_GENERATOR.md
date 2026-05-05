@@ -325,6 +325,7 @@ Current optimizations:
 - `DOCGEN_ACTIVE_JOB` blocks dispatching the next queued job until the current job finalizer has written `Ready` for the complete file set.
 - If the active job is waiting but worker tasks are missing, dispatcher/finalizer rebuild missing file tasks from `Agreements_Files` and starts a recovery batch.
 - Stale worker tasks whose `Agreements_Files[ID]` no longer exists are consumed without retry, so old queue entries cannot block the current job.
+- Dispatcher deletes its own time trigger when there is no active job and no queued job, so the script does not keep polling forever.
 - Finalizer verifies the physical PDF exists in Drive; a prefilled `Agreements_Files[File]` path alone is never enough to mark a row `Ready`.
 - `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
