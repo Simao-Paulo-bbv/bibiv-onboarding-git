@@ -32,6 +32,40 @@ function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId
   return { ok: true, queued: true, jobId: args.jobId };
 }
 
+function resetDocGenerationQueuesManual() {
+  const runId = makeRunId_();
+  const props = PropertiesService.getScriptProperties();
+  const keys = [
+    CONFIG.DOC_GENERATOR.ACTIVE_JOB_KEY,
+    CONFIG.DOC_GENERATOR.QUEUE_KEY,
+    CONFIG.DOC_GENERATOR.FILE_TASK_QUEUE_KEY,
+    CONFIG.DOC_GENERATOR.FINALIZER_QUEUE_KEY
+  ];
+
+  keys.forEach(key => {
+    if (key) props.deleteProperty(key);
+  });
+
+  const handlers = {
+    processNextQueuedDocGenerationJob: true,
+    processNextAgreementFileTask: true,
+    processNextAgreementFinalizer: true
+  };
+  let deletedTriggers = 0;
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (!handlers[trigger.getHandlerFunction()]) return;
+    ScriptApp.deleteTrigger(trigger);
+    deletedTriggers++;
+  });
+
+  log_(runId, "WARN", "DOCGEN_MANUAL_RESET_DONE", {
+    clearedKeys: keys.filter(Boolean),
+    deletedTriggers: deletedTriggers
+  });
+
+  return { ok: true, clearedKeys: keys.filter(Boolean), deletedTriggers: deletedTriggers };
+}
+
 function processNextQueuedDocGenerationJob() {
   const runId = makeRunId_();
   const globalLock = tryAcquireGlobalGenerationLock_(runId);

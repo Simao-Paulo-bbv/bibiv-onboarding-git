@@ -64,6 +64,14 @@ processNextAgreementFinalizer()
 
 It checks whether all expected files for a `Job_ID` have a stored file path, creates missing `Signed_Documents` upload rows, batch marks `Agreements_Files` as `Ready`, batch marks `Generation_Job_Items` as `Agreement file created`, and only then updates the main row to `Agreements Generated`.
 
+Manual maintenance function:
+
+```text
+resetDocGenerationQueuesManual()
+```
+
+Use it only when no valid agreement generation should be running. It clears `DOCGEN_ACTIVE_JOB`, the dispatcher/file/finalizer queues, and generator time triggers.
+
 Recommended AppSheet parameters:
 
 ```text
