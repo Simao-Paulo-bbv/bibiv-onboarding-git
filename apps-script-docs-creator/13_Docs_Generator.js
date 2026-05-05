@@ -42,6 +42,13 @@ function processNextQueuedDocGenerationJob() {
 
   let claimKey = "";
   try {
+    const active = getActiveDocGenerationJob_(runId);
+    if (active) {
+      log_(runId, "INFO", "DOCGEN_ACTIVE_JOB_BLOCKS_DISPATCH", active);
+      ensureDocGenerationQueueTrigger();
+      return { ok: true, busy: true, activeJob: active };
+    }
+
     const args = dequeueDocGenerationJob_(runId);
     if (!args) {
       log_(runId, "INFO", "DOCGEN_QUEUE_EMPTY", {});
@@ -69,12 +76,14 @@ function processDocGenerationJob_(runId, args) {
 
   const files = findPendingAgreementFileRows_(runId, args);
   if (!files.length) {
+    setActiveDocGenerationJob_(runId, args);
     enqueueAgreementFinalizer_(runId, args);
     ensureAgreementFinalizerTrigger_();
     log_(runId, "INFO", "DOCGEN_NO_PENDING_FILES_FINALIZER_ENQUEUED", args);
     return { ok: true, dispatched: 0, message: "No pending Agreement files." };
   }
 
+  setActiveDocGenerationJob_(runId, args);
   const dispatched = enqueueAgreementFileTasks_(runId, args, files);
   enqueueAgreementFinalizer_(runId, args);
   ensureAgreementFileWorkerTriggers_(dispatched);
@@ -181,6 +190,53 @@ function queueHasItems_() {
   return queue.length > 0;
 }
 
+function docGenerationJobKey_(args) {
+  return String(args && (args.jobId || args.onboardingId || args.agreementFileId) || "").trim();
+}
+
+function getActiveDocGenerationJob_(runId) {
+  const props = PropertiesService.getScriptProperties();
+  const active = safeJsonParse_(props.getProperty(CONFIG.DOC_GENERATOR.ACTIVE_JOB_KEY));
+  if (!active || !active.key) return null;
+
+  const startedAt = new Date(active.startedAt || 0).getTime();
+  const ageSeconds = startedAt ? (Date.now() - startedAt) / 1000 : 0;
+  const ttl = Number(CONFIG.DOC_GENERATOR.ACTIVE_JOB_TTL_SECONDS || 1800);
+  if (ageSeconds > ttl) {
+    props.deleteProperty(CONFIG.DOC_GENERATOR.ACTIVE_JOB_KEY);
+    log_(runId, "WARN", "DOCGEN_ACTIVE_JOB_EXPIRED_CLEARED", {
+      key: active.key,
+      ageSeconds: Math.round(ageSeconds)
+    });
+    return null;
+  }
+
+  return active;
+}
+
+function setActiveDocGenerationJob_(runId, args) {
+  const key = docGenerationJobKey_(args);
+  if (!key) return;
+  const active = {
+    key: key,
+    jobId: args.jobId || "",
+    onboardingId: args.onboardingId || "",
+    startedAt: new Date().toISOString()
+  };
+  PropertiesService.getScriptProperties().setProperty(CONFIG.DOC_GENERATOR.ACTIVE_JOB_KEY, JSON.stringify(active));
+  log_(runId, "INFO", "DOCGEN_ACTIVE_JOB_SET", active);
+}
+
+function clearActiveDocGenerationJob_(runId, args) {
+  const key = docGenerationJobKey_(args);
+  const props = PropertiesService.getScriptProperties();
+  const active = safeJsonParse_(props.getProperty(CONFIG.DOC_GENERATOR.ACTIVE_JOB_KEY));
+  if (!active || !active.key || active.key === key) {
+    props.deleteProperty(CONFIG.DOC_GENERATOR.ACTIVE_JOB_KEY);
+    log_(runId, "INFO", "DOCGEN_ACTIVE_JOB_CLEARED", { key: key || active && active.key || "" });
+  }
+}
+
 function readDocGenerationQueue_(props) {
   return safeJsonParse_(props.getProperty(CONFIG.DOC_GENERATOR.QUEUE_KEY)) || [];
 }
@@ -241,6 +297,17 @@ function processNextAgreementFileTask() {
 
   let claimKey = "";
   try {
+    const active = getActiveDocGenerationJob_(runId);
+    if (active && docGenerationJobKey_(task) !== active.key) {
+      requeueAgreementFileTask_(runId, task, "active-job-mismatch");
+      ensureAgreementFileWorkerTriggers_(1);
+      log_(runId, "INFO", "DOCGEN_FILE_TASK_WAITING_FOR_ACTIVE_JOB", {
+        taskKey: docGenerationJobKey_(task),
+        activeKey: active.key
+      });
+      return { ok: true, waiting: true };
+    }
+
     claimKey = claimAgreementFileTask_(runId, task);
     const result = processAgreementFileTask_(runId, task);
     enqueueAgreementFinalizer_(runId, task);
@@ -359,6 +426,7 @@ function finalizeAgreementJobIfComplete_(runId, task) {
       retryCount: retryCount
     });
     task.finalizerRetryCount = retryCount;
+    if (giveUp) clearActiveDocGenerationJob_(runId, task);
     return { ok: !giveUp, complete: false, giveUp: giveUp };
   }
 
@@ -372,6 +440,9 @@ function finalizeAgreementJobIfComplete_(runId, task) {
     onboardingId: onboardingId,
     readyFiles: readyFileUpdates.length
   });
+
+  clearActiveDocGenerationJob_(runId, task);
+  if (queueHasItems_()) ensureDocGenerationQueueTrigger();
 
   return { ok: true, complete: true, readyFiles: readyFileUpdates.length };
 }
@@ -467,6 +538,17 @@ function requeueAgreementFileTaskAfterFailure_(runId, task, err) {
     return;
   }
 
+  task.retryCount = retryCount;
+  task.retryAfterError = String(err && err.message || err).slice(0, 300);
+  requeueAgreementFileTask_(runId, task, "after-error");
+  log_(runId, "ERROR", "DOCGEN_FILE_TASK_REQUEUED_AFTER_ERROR", {
+    agreementFileId: task.agreementFileId || "",
+    retryCount: retryCount,
+    error: String(err && err.message || err).slice(0, 900)
+  });
+}
+
+function requeueAgreementFileTask_(runId, task, reason) {
   const lock = LockService.getScriptLock();
   lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
   try {
@@ -474,15 +556,12 @@ function requeueAgreementFileTaskAfterFailure_(runId, task, err) {
     const queue = readAgreementFileTaskQueue_(props);
     const exists = queue.some(item => String(item.agreementFileId || "") === String(task.agreementFileId || ""));
     if (!exists) {
-      task.retryCount = retryCount;
-      task.retryAfterError = String(err && err.message || err).slice(0, 300);
       queue.push(task);
       writeAgreementFileTaskQueue_(props, queue);
     }
-    log_(runId, "ERROR", "DOCGEN_FILE_TASK_REQUEUED_AFTER_ERROR", {
+    log_(runId, "INFO", "DOCGEN_FILE_TASK_REQUEUED", {
       agreementFileId: task.agreementFileId || "",
-      retryCount: retryCount,
-      error: String(err && err.message || err).slice(0, 900)
+      reason: reason || ""
     });
   } finally {
     lock.releaseLock();

@@ -47,11 +47,13 @@ The actual PDF work is done by bounded per-file workers:
 processNextAgreementFileTask()
 ```
 
-Default parallelism is intentionally low:
+Default parallelism is intentionally low and scoped to one active generation job:
 
 ```text
 CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM = 2
 ```
+
+The active unit is `Job_ID` first, with `Onboarding_ID` as fallback. This keeps parallelism inside one onboarding/NIP package instead of spreading worker time across many different NIPs.
 
 The finalizer is:
 
@@ -308,7 +310,8 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 Current optimizations:
 
 - Jobs are dispatched quickly and the slow Google Docs copy/export work runs in bounded per-file workers.
-- `FILE_WORKER_PARALLELISM = 2` lets one onboarding generate two PDFs at a time without unbounded trigger fan-out.
+- `FILE_WORKER_PARALLELISM = 2` lets one active onboarding/job generate two PDFs at a time without unbounded trigger fan-out.
+- `DOCGEN_ACTIVE_JOB` blocks dispatching the next queued job until the current job finalizer has written `Ready` for the complete file set.
 - `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
 - Working Google Docs copies are trashed after PDF export by default (`KEEP_WORKING_DOC_COPY=false`).
