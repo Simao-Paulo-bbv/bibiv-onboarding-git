@@ -6,6 +6,10 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   const govBase = String((CONFIG && CONFIG.GOV_API_BASE_URL) || "").trim();
   const govKey = String((CONFIG && CONFIG.GOV_API_KEY) || "").trim();
   const hasGovConfig = govBase !== "" && govKey !== "";
+  if (!hasGovConfig && CONFIG && CONFIG.REQUIRE_GOV_API_FOR_VAT === true) {
+    log_(runId, "ERROR", "GOV_CONFIG_REQUIRED_FOR_VAT", { rowNum, nip: nipClean });
+    return { ok: false, httpCode: 0, rateLimited: false, reason: "GOV_CONFIG_REQUIRED" };
+  }
 
   const companyNameIdx = (mapping && mapping.dstIndex) ? mapping.dstIndex["nazwa firmy"] : null;
   const companyNameFromRow = companyNameIdx != null
@@ -149,10 +153,11 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   }
 
   // Optional rollback fallback for missing/incomplete VAT subject data.
-  // Keep OFF in production: legacy MF/relay can return less precise company names.
+  // Keep OFF in production. When REQUIRE_GOV_API_FOR_VAT=true, this is never used.
   if (
     CONFIG &&
     CONFIG.MF_LEGACY_VAT_FALLBACK_ENABLED === true &&
+    CONFIG.REQUIRE_GOV_API_FOR_VAT !== true &&
     hasGovConfig &&
     ((subj && !isMfSubjectCompleteForMain_(subj)) || (!subj && !vatHasRecognizedSubjectField))
   ) {

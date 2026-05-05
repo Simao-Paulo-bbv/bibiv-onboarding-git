@@ -93,6 +93,7 @@ const CONFIG = {
   GOV_VAT_PATH: "/v1/vat/search",
   GOV_REGON_PATH: "/v1/regon/search",
   GOV_IBAN_PATH: "/v1/iban/validate",
+  REQUIRE_GOV_API_FOR_VAT: true,
 
   // Legacy MF direct API (kept as fallback/rollback option).
   MF_API_URL: "https://wl-api.mf.gov.pl/api/search/nip/{nip}?date={date}",
