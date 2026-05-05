@@ -287,7 +287,7 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 
 Current optimizations:
 
-- Read-heavy lookups for `Agreements_Files`, `BIBIV_onboarding_APP`, and `Doc_Templates` can use the underlying Google Sheet directly (`CONFIG.DOC_GENERATOR.USE_SHEET_READS=true`) with fallback to AppSheet API. Writes still go through AppSheet API so data-change bots and AppSheet state remain authoritative.
+- Read-heavy lookups for `Agreements_Files`, `BIBIV_onboarding_APP`, and `Doc_Templates` can use the underlying Google Sheet directly (`CONFIG.DOC_GENERATOR.USE_SHEET_READS=true`) with fallback to AppSheet API. The script manifest uses the read-only spreadsheet scope, and writes still go through AppSheet API so data-change bots and AppSheet state remain authoritative.
 - `Doc_Templates` rows are preloaded with one AppSheet `Find` per job.
 - Each chunk processes at most `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN` files. The worker immediately continues with the same `Job_ID` while its runtime budget allows, then schedules a short one-shot continuation trigger if it must yield before timeout.
 - Rows stuck in `Generating` after a timeout are included in the next retry pass.
