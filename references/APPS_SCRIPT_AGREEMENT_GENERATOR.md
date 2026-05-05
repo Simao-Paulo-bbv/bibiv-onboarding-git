@@ -39,7 +39,7 @@ The time-driven worker does the real generation:
 processNextQueuedDocGenerationJob()
 ```
 
-The worker is created automatically by `ensureDocGenerationQueueTrigger()` and runs every minute. It processes one queued `Job_ID` per execution.
+The worker is created automatically by `ensureDocGenerationQueueTrigger()` and runs every minute. It processes one queued `Job_ID` per execution, in safe chunks controlled by `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN`.
 
 Recommended AppSheet parameters:
 
@@ -49,7 +49,7 @@ jobId             = [Job_ID]
 agreementFileId   = [ID]
 ```
 
-The script uses `jobId` first. One queued job generates all pending agreement files for that job.
+The script uses `jobId` first. One queued job generates pending agreement files for that job. If more files remain after the safe per-run limit, the script re-enqueues the same `Job_ID` for continuation.
 
 ## Required config before production
 
@@ -173,16 +173,18 @@ For a queued job:
    - writes the PDF to `Agreements_Files[File]` path,
    - marks the file row as `Generated`.
 
-3. Creates missing `Signed_Documents` upload rows for successfully generated agreement docs.
+3. Batch marks the processed chunk as `Ready` and updates matching `Generation_Job_Items`.
 
-4. Batch marks:
+4. Creates missing `Signed_Documents` upload rows for successfully generated agreement docs.
+
+5. Batch marks:
 
    ```text
    Agreements_Files[File_status] = "Ready"
    Generation_Job_Items[Item_Status] = "Agreement file created"
    ```
 
-5. If all generated files for the job are ready, updates:
+6. If all generated files for the job are ready, updates:
 
    ```text
    BIBIV_onboarding_APP[Status] = "Agreements Generated"
@@ -286,6 +288,8 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 Current optimizations:
 
 - `Doc_Templates` rows are preloaded with one AppSheet `Find` per job.
+- Each worker execution processes at most `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN` files. This prevents Apps Script timeout on larger agreement packs and resumes the same `Job_ID` on the next trigger.
+- Rows stuck in `Generating` after a timeout are included in the next retry pass.
 - `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
 - Working Google Docs copies are trashed after PDF export by default (`KEEP_WORKING_DOC_COPY=false`).
