@@ -108,6 +108,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 8. **REGON hard failures require humans** — persistent `MF_REGON_BLOCK` rows are moved to `Status = "need verification"` and are not retried forever.
 9. **`name_api` refresh is isolated** — `runRefreshNameApiOnly()` updates only `name_api` from REGON/GOV. It must not run import/AppSheet/People/bank logic.
 10. **GOV enrichment status gate** — regular GOV/MF enrichment runs only while `Status = "Init"`; later AppSheet workflow/status changes must not re-run GOV or overwrite `name_api`.
+11. **`name_api` source is REGON** — never derive `name_api` from VAT/MF subject names. Legacy MF VAT fallback is disabled by default.
 
 ## Key reference docs in this folder
 

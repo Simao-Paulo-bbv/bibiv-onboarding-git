@@ -97,6 +97,7 @@ const CONFIG = {
   // Legacy MF direct API (kept as fallback/rollback option).
   MF_API_URL: "https://wl-api.mf.gov.pl/api/search/nip/{nip}?date={date}",
   MF_TIMEOUT_MS: 15000,
+  MF_LEGACY_VAT_FALLBACK_ENABLED: false,
   // Optional relay (recommended when MF rate-limit WL-191/429 blocks direct calls).
   // Keep relay config ready, but control usage with MF_USE_RELAY toggle.
   // false = direct MF API (legacy behavior), true = use relay/proxy.

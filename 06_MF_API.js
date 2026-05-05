@@ -148,9 +148,14 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     }
   }
 
-  // Additional fallback for missing/incomplete VAT subject data:
-  // try legacy MF path (relay/direct) and merge missing fields.
-  if (hasGovConfig && ((subj && !isMfSubjectCompleteForMain_(subj)) || (!subj && !vatHasRecognizedSubjectField))) {
+  // Optional rollback fallback for missing/incomplete VAT subject data.
+  // Keep OFF in production: legacy MF/relay can return less precise company names.
+  if (
+    CONFIG &&
+    CONFIG.MF_LEGACY_VAT_FALLBACK_ENABLED === true &&
+    hasGovConfig &&
+    ((subj && !isMfSubjectCompleteForMain_(subj)) || (!subj && !vatHasRecognizedSubjectField))
+  ) {
     const legacyFallback = fetchLegacyMfSubjectWithFallback_(runId, rowNum, nipClean, String(dateStr || "").trim());
     if (legacyFallback.subject) {
       if (!subj) {
@@ -220,10 +225,9 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
 
   if (nameFromRegon) {
     writeIfColExists_(dest, mapping, rowNum, "name_api", nameFromRegon);
-  } else if (subj) {
-    writeIfColExists_(dest, mapping, rowNum, "name_api", subj.name || "");
   } else if (companyNameFromRow) {
-    // NOT VAT fallback to source company name to avoid blocking downstream Add.
+    // Do not use VAT/MF subject name for name_api; it can be incomplete.
+    // REGON is the canonical source. Source company name is only a last resort.
     writeIfColExists_(dest, mapping, rowNum, "name_api", companyNameFromRow);
   }
   if (regonFromRegon && (!subj || !String(subj.regon || "").trim())) {
