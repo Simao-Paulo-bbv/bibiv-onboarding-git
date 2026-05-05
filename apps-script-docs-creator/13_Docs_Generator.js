@@ -320,6 +320,12 @@ function ensureDocGenerationQueueTrigger() {
     .create();
 }
 
+function deleteTriggersForHandler_(handler) {
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === handler) ScriptApp.deleteTrigger(trigger);
+  });
+}
+
 function findPendingAgreementFileRows_(runId, args) {
   const parts = [
     "IN([File_status], LIST(" +
