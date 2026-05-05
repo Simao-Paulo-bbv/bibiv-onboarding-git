@@ -133,7 +133,7 @@ Key columns: `File_status` (`Set Up` → optional `Generating` → optional `Gen
 ### 4. `Generate Applications` / `Generate Agreements`
 - **Applications**: existing AppSheet file-factory bot can stay as-is.
 - **Agreements**: legacy native AppSheet PDF generator should stay disabled; `Generate Agreements - Apps Script` calls `generateAgreementFilesFromAppSheet()`.
-- Apps Script dispatches per-file worker tasks for one active `Job_ID` at a time, writes intermediate `Generating`/`Generated` statuses when accepted by AppSheet, creates missing `Signed_Documents` rows, and finalizes with `Ready`.
+- Apps Script dispatches per-file worker tasks for one active `Job_ID` at a time, writes intermediate `Generating`/`Generated` statuses when accepted by AppSheet, verifies physical PDFs exist in Drive, creates missing `Signed_Documents` rows, and finalizes with `Ready`.
 - AppSheet completion/email bots must continue to key only on `Ready`.
 
 ### 5. `JOB - finish and continue queue`

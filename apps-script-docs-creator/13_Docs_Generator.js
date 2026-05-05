@@ -677,7 +677,9 @@ function findPendingAgreementFileRows_(runId, args) {
   const parts = [
     "IN([File_status], LIST(" +
       appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_SET_UP) + ", " +
-      appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED) +
+      appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATING) + ", " +
+      appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED) + ", " +
+      appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_READY) +
     "))",
     "[Category] = " + appSheetQuote_(CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY)
   ];
@@ -1337,13 +1339,19 @@ function getGeneratedArtifactFromExistingRow_(fileRow) {
   const status = String(getField_(fileRow, "File_status") || "").trim();
   const file = String(getField_(fileRow, "File") || "").trim();
   if (!file) return null;
-  if (status === CONFIG.DOC_GENERATOR.FILE_STATUS_READY ||
-      status === CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED ||
-      status === CONFIG.DOC_GENERATOR.FILE_STATUS_SET_UP ||
-      status === CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATING) {
-    return { relativePath: file, pdfId: "", docId: "" };
-  }
+  if (!generatedDriveFileExists_(file)) return null;
   return { relativePath: file, pdfId: "", docId: "" };
+}
+
+function generatedDriveFileExists_(relativePath) {
+  try {
+    const outputRoot = getDocGeneratorOutputRootFolder_();
+    const resolved = findExistingFolderPathAndName_(outputRoot, relativePath);
+    if (!resolved || !resolved.folder || !resolved.fileName) return false;
+    return resolved.folder.getFilesByName(resolved.fileName).hasNext();
+  } catch (e) {
+    return false;
+  }
 }
 
 function batchMarkAgreementFilesReady_(runId, rows) {
@@ -1690,6 +1698,33 @@ function ensureFolderPathAndName_(rootFolder, relativePath) {
   DOCGEN_RUNTIME_CACHE.folderByPath[folderPathKey] = folder;
   DOCGEN_RUNTIME_CACHE.folderByPath[firstFolderName] = effectiveRoot;
   return { rootFolder: effectiveRoot, folder: folder, fileName: fileName };
+}
+
+function findExistingFolderPathAndName_(rootFolder, relativePath) {
+  const clean = normalizeRelativeDrivePath_(relativePath);
+  const parts = clean.split("/").filter(Boolean);
+  if (!parts.length) return null;
+  const fileName = parts.pop();
+  const firstFolderName = parts.shift();
+  if (!firstFolderName || !fileName) return null;
+
+  let folder = null;
+  if (rootFolder) {
+    const roots = rootFolder.getFoldersByName(firstFolderName);
+    if (!roots.hasNext()) return null;
+    folder = roots.next();
+  } else {
+    folder = findExistingFolderByName_(firstFolderName);
+    if (!folder) return null;
+  }
+
+  for (let i = 0; i < parts.length; i++) {
+    const children = folder.getFoldersByName(parts[i]);
+    if (!children.hasNext()) return null;
+    folder = children.next();
+  }
+
+  return { folder: folder, fileName: fileName };
 }
 
 function getRequiredFileRootFolder_(projectRootFolder, folderName) {

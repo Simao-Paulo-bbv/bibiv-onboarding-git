@@ -197,7 +197,7 @@ For a queued job:
    - writes the PDF to `Agreements_Files[File]` path,
    - marks the file row as `Generated`.
 
-4. Finalizer waits until all files for the job are generated, then creates missing `Signed_Documents` upload rows for generated agreement docs.
+4. Finalizer waits until all files for the job physically exist in Drive, then creates missing `Signed_Documents` upload rows for generated agreement docs.
 
 5. Finalizer batch marks:
 
@@ -227,7 +227,7 @@ Ready       -> final state used by existing AppSheet completion/email bots
 
 `Ready` remains the only generated-document status that should drive AppSheet completion and sending bots. Do not make bots react to `Generating` or `Generated`.
 
-Before relying on visible progress in AppSheet, add `Generating` and `Generated` to the `Agreements_Files[File_status]` enum. If AppSheet rejects `Generated`, the script falls back to saving only `Agreements_Files[File]`; the finalizer can still finish once every generated file has a path. Adding the enum values is still recommended so users can see live progress clearly.
+Before relying on visible progress in AppSheet, add `Generating` and `Generated` to the `Agreements_Files[File_status]` enum. `Agreements_Files[File]` is a planned path and is not treated as proof that the PDF exists; the finalizer verifies the file in Drive before writing `Ready`.
 
 ## Signed upload placeholders
 
@@ -312,6 +312,7 @@ Current optimizations:
 - Jobs are dispatched quickly and the slow Google Docs copy/export work runs in bounded per-file workers.
 - `FILE_WORKER_PARALLELISM = 2` lets one active onboarding/job generate two PDFs at a time without unbounded trigger fan-out.
 - `DOCGEN_ACTIVE_JOB` blocks dispatching the next queued job until the current job finalizer has written `Ready` for the complete file set.
+- Finalizer verifies the physical PDF exists in Drive; a prefilled `Agreements_Files[File]` path alone is never enough to mark a row `Ready`.
 - `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
 - Working Google Docs copies are trashed after PDF export by default (`KEEP_WORKING_DOC_COPY=false`).
