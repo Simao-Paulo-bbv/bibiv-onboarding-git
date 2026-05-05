@@ -47,10 +47,10 @@ The actual PDF work is done by bounded per-file workers:
 processNextAgreementFileTask()
 ```
 
-Default parallelism is intentionally low and scoped to one active generation job:
+Worker concurrency is intentionally single-lane and scoped to one active generation job:
 
 ```text
-CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM = 2
+CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM = 1
 CONFIG.DOC_GENERATOR.FILE_WORKER_BATCH_MAX_ITEMS = 7
 ```
 
@@ -318,8 +318,8 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 
 Current optimizations:
 
-- Jobs are dispatched quickly and the slow Google Docs copy/export work runs in bounded per-file workers.
-- `FILE_WORKER_PARALLELISM = 2` lets one active onboarding/job generate two PDFs at a time without unbounded trigger fan-out.
+- Jobs are dispatched quickly and the slow Google Docs copy/export work starts inline in one active worker batch.
+- `FILE_WORKER_PARALLELISM = 1` is intentional: it avoids duplicate worker triggers, Apps Script trigger quota issues, and `already running` claim collisions.
 - A worker processes a batch of files from the active job, not just one file, so the remaining files do not wait for repeated 1-minute trigger delays.
 - Dispatcher starts the first worker batch inline right after enqueueing tasks, so generation begins immediately when the job is picked up.
 - `DOCGEN_ACTIVE_JOB` blocks dispatching the next queued job until the current job finalizer has written `Ready` for the complete file set.

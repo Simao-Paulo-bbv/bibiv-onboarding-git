@@ -121,11 +121,9 @@ function processDocGenerationJob_(runId, args) {
   setActiveDocGenerationJob_(runId, args);
   const dispatched = enqueueAgreementFileTasks_(runId, args, files);
   enqueueAgreementFinalizer_(runId, args);
-  ensureAgreementFileWorkerTriggers_(dispatched);
   if (dispatched > 0) {
     processAgreementFileTaskBatch_(runId, "dispatcher-inline");
   }
-  ensureAgreementFinalizerTrigger_();
 
   log_(runId, "INFO", "DOCGEN_DISPATCHED_FILE_TASKS", {
     jobId: args.jobId || "",
@@ -367,6 +365,7 @@ function requeueDocGenerationJobAfterFailure_(runId, args, err) {
 }
 
 function processNextAgreementFileTask() {
+  deleteTriggersForHandler_("processNextAgreementFileTask");
   const runId = makeRunId_();
   return processAgreementFileTaskBatch_(runId, "trigger");
 }
@@ -494,6 +493,7 @@ function processAgreementFileTask_(runId, task) {
 }
 
 function processNextAgreementFinalizer() {
+  deleteTriggersForHandler_("processNextAgreementFinalizer");
   const runId = makeRunId_();
   const task = dequeueAgreementFinalizer_(runId);
   if (!task) {
@@ -784,13 +784,16 @@ function ensureAgreementFileWorkerTriggers_(taskCount) {
   const handler = "processNextAgreementFileTask";
   const parallelism = Math.max(1, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM || 2));
   const count = Math.min(Math.max(1, Number(taskCount || 1)), parallelism);
+  if (countTriggersForHandler_(handler) > 0) return;
   for (let i = 0; i < count; i++) {
     ScriptApp.newTrigger(handler).timeBased().after(1).create();
   }
 }
 
 function ensureAgreementFinalizerTrigger_() {
-  ScriptApp.newTrigger("processNextAgreementFinalizer")
+  const handler = "processNextAgreementFinalizer";
+  if (countTriggersForHandler_(handler) > 0) return;
+  ScriptApp.newTrigger(handler)
     .timeBased()
     .after(CONFIG.DOC_GENERATOR.FINALIZER_REQUEUE_DELAY_MS || 60000)
     .create();
@@ -798,6 +801,12 @@ function ensureAgreementFinalizerTrigger_() {
 
 function countTriggersForHandler_(handler) {
   return ScriptApp.getProjectTriggers().filter(trigger => trigger.getHandlerFunction() === handler).length;
+}
+
+function deleteTriggersForHandler_(handler) {
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === handler) ScriptApp.deleteTrigger(trigger);
+  });
 }
 
 function findPendingAgreementFileRows_(runId, args) {
