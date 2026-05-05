@@ -49,7 +49,13 @@ function processNextQueuedDocGenerationJob() {
     }
 
     claimKey = claimDocGenerationJob_(runId, args);
-    const result = processDocGenerationJob_(runId, args);
+    let result;
+    try {
+      result = processDocGenerationJob_(runId, args);
+    } catch (err) {
+      requeueDocGenerationJobAfterFailure_(runId, args, err);
+      throw err;
+    }
     if (queueHasItems_()) ensureDocGenerationQueueTrigger();
     return result;
   } finally {
@@ -92,12 +98,22 @@ function processDocGenerationJob_(runId, args) {
 
         if (!templateRowsById[templateId]) throw new Error("Cannot find doc template " + templateId + ".");
 
-        const generated = generatePdfForAgreementFileRow_(
-          runId,
-          fileRow,
-          mainRowsById[fileOnboardingId],
-          templateRowsById[templateId]
-        );
+        let generated = getGeneratedArtifactFromExistingRow_(fileRow);
+        if (!generated) {
+          markAgreementFileGenerating_(runId, fileRow);
+          generated = generatePdfForAgreementFileRow_(
+            runId,
+            fileRow,
+            mainRowsById[fileOnboardingId],
+            templateRowsById[templateId]
+          );
+          markAgreementFileGenerated_(runId, buildAgreementFileGeneratedRow_(fileRow, generated));
+        } else {
+          log_(runId, "INFO", "DOCGEN_FILE_ALREADY_GENERATED_FINALIZING", {
+            agreementFileId: fileId,
+            file: generated.relativePath
+          });
+        }
 
         readyFileUpdates.push(buildAgreementFileReadyRow_(fileRow, generated));
         readyJobItemUpdates.push(buildGenerationJobItemCreatedRow_(fileRow));
@@ -115,9 +131,9 @@ function processDocGenerationJob_(runId, args) {
       }
     });
 
+    createSignedDocumentUploadRowsForReadyAgreements_(runId, files, readyFileUpdates);
     batchMarkAgreementFilesReady_(runId, readyFileUpdates);
     batchMarkGenerationJobItemsCreated_(runId, readyJobItemUpdates);
-    createSignedDocumentUploadRowsForReadyAgreements_(runId, files, readyFileUpdates);
     finishMainRowsWhenAllAgreementsReady_(runId, files, args, readyFileUpdates);
 
     const failed = results.filter(r => !r.ok);
@@ -235,6 +251,48 @@ function writeDocGenerationQueue_(props, queue) {
   props.setProperty(CONFIG.DOC_GENERATOR.QUEUE_KEY, JSON.stringify(queue || []));
 }
 
+function requeueDocGenerationJobAfterFailure_(runId, args, err) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const queue = readDocGenerationQueue_(props);
+    const key = args.jobId || args.agreementFileId || args.onboardingId;
+    const retryCount = Number(args.retryCount || 0) + 1;
+    const maxRetries = Number(CONFIG.DOC_GENERATOR.JOB_REQUEUE_MAX_RETRIES || 3);
+    if (retryCount > maxRetries) {
+      log_(runId, "ERROR", "DOCGEN_JOB_REQUEUE_LIMIT_REACHED", {
+        jobId: args.jobId || "",
+        onboardingId: args.onboardingId || "",
+        retryCount: retryCount,
+        error: String(err && err.message || err).slice(0, 900)
+      });
+      return;
+    }
+    const exists = queue.some(item => (item.jobId || item.agreementFileId || item.onboardingId) === key);
+    if (!exists) {
+      queue.unshift({
+        onboardingId: args.onboardingId,
+        jobId: args.jobId,
+        agreementFileId: args.agreementFileId,
+        queuedAt: new Date().toISOString(),
+        retryCount: retryCount,
+        retryAfterError: String(err && err.message || err).slice(0, 300)
+      });
+      writeDocGenerationQueue_(props, queue);
+    }
+    log_(runId, "ERROR", "DOCGEN_JOB_REQUEUED_AFTER_ERROR", {
+      jobId: args.jobId || "",
+      onboardingId: args.onboardingId || "",
+      retryCount: retryCount,
+      error: String(err && err.message || err).slice(0, 900)
+    });
+  } catch (requeueErr) {
+    log_(runId, "ERROR", "DOCGEN_JOB_REQUEUE_FAILED", {
+      jobId: args && args.jobId || "",
+      error: String(requeueErr && requeueErr.message || requeueErr).slice(0, 900)
+    });
+  }
+}
+
 function ensureDocGenerationQueueTrigger() {
   const handler = "processNextQueuedDocGenerationJob";
   const exists = ScriptApp.getProjectTriggers().some(trigger => trigger.getHandlerFunction() === handler);
@@ -247,7 +305,10 @@ function ensureDocGenerationQueueTrigger() {
 
 function findPendingAgreementFileRows_(runId, args) {
   const parts = [
-    "[File_status] = " + appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_SET_UP),
+    "IN([File_status], LIST(" +
+      appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_SET_UP) + ", " +
+      appSheetQuote_(CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED) +
+    "))",
     "[Category] = " + appSheetQuote_(CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY)
   ];
 
@@ -811,6 +872,56 @@ function buildAgreementFileReadyRow_(fileRow, generated) {
     File_status: CONFIG.DOC_GENERATOR.FILE_STATUS_READY,
     File: generated.relativePath
   };
+}
+
+function buildAgreementFileGeneratedRow_(fileRow, generated) {
+  return {
+    ID: getField_(fileRow, "ID"),
+    File_status: CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED,
+    File: generated.relativePath
+  };
+}
+
+function buildAgreementFileGeneratingRow_(fileRow) {
+  return {
+    ID: getField_(fileRow, "ID"),
+    File_status: CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATING
+  };
+}
+
+function markAgreementFileGenerating_(runId, fileRow) {
+  if (!CONFIG.DOC_GENERATOR.FILE_PROGRESS_STATUSES_ENABLED) return;
+  markAgreementFileProgressStatus_(runId, buildAgreementFileGeneratingRow_(fileRow), "DOCGEN_FILE_GENERATING");
+}
+
+function markAgreementFileGenerated_(runId, row) {
+  if (!CONFIG.DOC_GENERATOR.FILE_PROGRESS_STATUSES_ENABLED) return;
+  markAgreementFileProgressStatus_(runId, row, "DOCGEN_FILE_GENERATED");
+}
+
+function markAgreementFileProgressStatus_(runId, row, eventName) {
+  if (!row || !row.ID) return;
+  try {
+    callAppSheet_(runId, DOCGEN_TABLES.AGREEMENTS_FILES, row, CONFIG.APPSHEET_ACTION_EDIT, row.ID);
+    log_(runId, "INFO", eventName, {
+      id: row.ID,
+      status: row.File_status || "",
+      file: row.File || ""
+    });
+  } catch (e) {
+    log_(runId, "WARN", eventName + "_UPDATE_FAILED_CONTINUING", {
+      id: row.ID,
+      status: row.File_status || "",
+      error: String(e && e.message || e).slice(0, 900)
+    });
+  }
+}
+
+function getGeneratedArtifactFromExistingRow_(fileRow) {
+  const status = String(getField_(fileRow, "File_status") || "").trim();
+  const file = String(getField_(fileRow, "File") || "").trim();
+  if (status !== CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED || !file) return null;
+  return { relativePath: file, pdfId: "", docId: "" };
 }
 
 function batchMarkAgreementFilesReady_(runId, rows) {

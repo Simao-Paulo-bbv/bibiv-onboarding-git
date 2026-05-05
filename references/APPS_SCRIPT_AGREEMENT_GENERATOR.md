@@ -164,21 +164,23 @@ For a queued job:
    ```
 
 2. For each pending row:
+   - marks the file row as `Generating` when progress statuses are enabled,
    - reads `Template_ID_Reference`,
    - finds the matching `Doc_Templates[Template_ID]`,
    - copies the Google Docs template file,
    - replaces simple placeholders,
    - exports the copy as PDF,
-   - writes the PDF to `Agreements_Files[File]` path.
+   - writes the PDF to `Agreements_Files[File]` path,
+   - marks the file row as `Generated`.
 
-3. Batch marks:
+3. Creates missing `Signed_Documents` upload rows for successfully generated agreement docs.
+
+4. Batch marks:
 
    ```text
    Agreements_Files[File_status] = "Ready"
    Generation_Job_Items[Item_Status] = "Agreement file created"
    ```
-
-4. Creates missing `Signed_Documents` upload rows for generated agreement docs only.
 
 5. If all generated files for the job are ready, updates:
 
@@ -187,6 +189,21 @@ For a queued job:
    ```
 
 The existing `JOB - finish and continue queue` bot can still finish the `Generation_Jobs` row because the script sets `Generation_Job_Items[Item_Status] = "Agreement file created"`.
+
+## Progress statuses
+
+The generator can show per-file progress in `Agreements_Files[File_status]`:
+
+```text
+Set Up      -> waiting for generator
+Generating  -> current PDF is being copied/replaced/exported
+Generated   -> PDF exists and upload-placeholder/finalization steps can run
+Ready       -> final state used by existing AppSheet completion/email bots
+```
+
+`Ready` remains the only generated-document status that should drive AppSheet completion and sending bots. Do not make bots react to `Generating` or `Generated`.
+
+Before enabling visible progress in AppSheet, add `Generating` and `Generated` to the `Agreements_Files[File_status]` enum. Progress status updates are non-blocking in the script, so generation continues even if AppSheet rejects those intermediate enum values.
 
 ## Signed upload placeholders
 

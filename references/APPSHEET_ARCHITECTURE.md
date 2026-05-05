@@ -67,7 +67,7 @@ One row per template that needs to be generated for a job.
 ### `Agreements_Files`
 The actual file-factory input table. Existing `Generate Applications` / `Generate Agreements` bots watch this table and produce physical files.
 
-Key columns: `File_status` ("Set Up" → "Ready"), `File`, `File_Name`, `Job_ID`, `Job_Item_ID`, `Template_ID_Reference`, plus the file artifacts.
+Key columns: `File_status` (`Set Up` → optional `Generating` → optional `Generated` → `Ready`), `File`, `File_Name`, `Job_ID`, `Job_Item_ID`, `Template_ID_Reference`, plus the file artifacts.
 
 ## Bot chain (the queue)
 
@@ -133,6 +133,7 @@ Key columns: `File_status` ("Set Up" → "Ready"), `File`, `File_Name`, `Job_ID`
 ### 4. `Generate Applications` / `Generate Agreements` (existing — keep as-is)
 - **Event**: `Agreements_Files` — Adds only, condition by Category
 - **Process**: existing file-factory logic; on success sets `File_status = "Ready"` and updates the parent `Generation_Job_Items` row (`Item_Status = "Agreement file created"`)
+- Agreement generation via Apps Script may write intermediate `Generating`/`Generated` statuses. AppSheet completion/email bots must continue to key only on `Ready`.
 
 ### 5. `JOB - finish and continue queue`
 - **Event**: `Generation_Job_Items` — Updates only
