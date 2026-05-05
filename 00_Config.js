@@ -29,6 +29,13 @@ const CONFIG = {
   BACKFILL_EXISTING_SCAN_LAST_N: 5000,
   BACKFILL_EXISTING_USE_IBAN_API: true,
 
+  // Maintenance-only name_api refresh.
+  // Run manually with runRefreshNameApiOnly(); it updates only DEST[name_api].
+  NAME_API_REFRESH_ENABLED: true,
+  NAME_API_REFRESH_MAX_ROWS_PER_RUN: 100,
+  NAME_API_REFRESH_SCAN_LAST_N: 0,
+  NAME_API_REFRESH_OVERWRITE_EXISTING: true,
+
 
   FEATURES: {
     ENFORCE_DEST_HEADERS: true,

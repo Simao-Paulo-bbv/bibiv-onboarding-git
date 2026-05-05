@@ -85,6 +85,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 | `10_Sheet_And_Header_Utils.js` | Header repair (non-destructive — never truncates) |
 | `11_Bank_Accounts.js` | Child table sync to AppSheet `Bank_Accounts` |
 | `12_Backfill_Existing.js` | Toggle-controlled backfill for legacy rows; currently OFF after representative-field catch-up |
+| `13_Name_Api_Refresh.js` | Maintenance-only refresh for historical `name_api`; updates only that column |
 | `apps-script-docs-creator/` | Standalone Apps Script `BIBIV_Onboarding_DocsCreator` for Agreement PDFs |
 | `mf-relay/` | Cloud Run service (ID-token auth) for MF VAT bypass |
 
@@ -105,6 +106,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 6. **No `LOOKUP(USEREMAIL(), …)` for record context** — abandoned; caused cross-user record mixing. Always carry context via `Generation_Jobs[Onboarding_ID]` → `Generation_Job_Items` → `Agreements_Files`.
 7. **Agreement generator is queue-backed** — AppSheet must enqueue via `generateAgreementFilesFromAppSheet`; the time-trigger worker processes one Job_ID at a time so one onboarding finishes and sends mail before the next.
 8. **REGON hard failures require humans** — persistent `MF_REGON_BLOCK` rows are moved to `Status = "need verification"` and are not retried forever.
+9. **`name_api` refresh is isolated** — `runRefreshNameApiOnly()` updates only `name_api` from REGON/GOV. It must not run import/AppSheet/People/bank logic.
 
 ## Key reference docs in this folder
 
