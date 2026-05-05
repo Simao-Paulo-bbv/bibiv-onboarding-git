@@ -44,6 +44,7 @@ function processNextQueuedDocGenerationJob() {
   try {
     const active = getActiveDocGenerationJob_(runId);
     if (active) {
+      recoverActiveDocGenerationJob_(runId, active);
       log_(runId, "INFO", "DOCGEN_ACTIVE_JOB_BLOCKS_DISPATCH", active);
       ensureDocGenerationQueueTrigger();
       return { ok: true, busy: true, activeJob: active };
@@ -237,6 +238,47 @@ function clearActiveDocGenerationJob_(runId, args) {
   if (!active || !active.key || active.key === key) {
     props.deleteProperty(CONFIG.DOC_GENERATOR.ACTIVE_JOB_KEY);
     log_(runId, "INFO", "DOCGEN_ACTIVE_JOB_CLEARED", { key: key || active && active.key || "" });
+  }
+}
+
+function recoverActiveDocGenerationJob_(runId, active) {
+  if (!active || !active.key) return;
+  if (agreementFileTaskQueueHasItems_()) {
+    ensureAgreementFileWorkerTriggers_(1);
+    return;
+  }
+
+  const args = {
+    jobId: active.jobId || "",
+    onboardingId: active.onboardingId || "",
+    agreementFileId: ""
+  };
+  try {
+    const files = findPendingAgreementFileRows_(runId, args);
+    const missingFiles = files.filter(fileRow => !getGeneratedArtifactFromExistingRow_(fileRow));
+    if (!missingFiles.length) {
+      enqueueAgreementFinalizer_(runId, args);
+      ensureAgreementFinalizerTrigger_();
+      return;
+    }
+
+    const requeued = enqueueAgreementFileTasks_(runId, args, missingFiles);
+    if (requeued > 0) {
+      ensureAgreementFileWorkerTriggers_(requeued);
+      processAgreementFileTaskBatch_(runId, "active-job-recovery");
+    }
+    log_(runId, "INFO", "DOCGEN_ACTIVE_JOB_RECOVERY", {
+      jobId: args.jobId,
+      onboardingId: args.onboardingId,
+      missingFiles: missingFiles.length,
+      requeued: requeued
+    });
+  } catch (e) {
+    log_(runId, "ERROR", "DOCGEN_ACTIVE_JOB_RECOVERY_FAILED", {
+      jobId: args.jobId,
+      onboardingId: args.onboardingId,
+      error: String(e && e.message || e).slice(0, 900)
+    });
   }
 }
 
@@ -444,6 +486,21 @@ function finalizeAgreementJobIfComplete_(runId, task) {
   });
 
   if (!expected || readyFileUpdates.length < expected) {
+    const missingFiles = files.filter(fileRow => !getGeneratedArtifactFromExistingRow_(fileRow));
+    if (missingFiles.length) {
+      const requeued = enqueueAgreementFileTasks_(runId, task, missingFiles);
+      if (requeued > 0) {
+        ensureAgreementFileWorkerTriggers_(requeued);
+        processAgreementFileTaskBatch_(runId, "finalizer-recovery");
+      }
+      log_(runId, "INFO", "DOCGEN_FINALIZER_REQUEUED_MISSING_FILE_TASKS", {
+        jobId: jobId,
+        onboardingId: onboardingId,
+        missingFiles: missingFiles.length,
+        requeued: requeued
+      });
+    }
+
     const retryCount = Number(task.finalizerRetryCount || 0) + 1;
     const maxRetries = Number(CONFIG.DOC_GENERATOR.FINALIZER_REQUEUE_MAX_RETRIES || 12);
     const giveUp = retryCount > maxRetries;

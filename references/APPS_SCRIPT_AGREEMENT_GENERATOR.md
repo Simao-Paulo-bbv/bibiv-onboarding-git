@@ -315,6 +315,7 @@ Current optimizations:
 - A worker processes a batch of files from the active job, not just one file, so the remaining files do not wait for repeated 1-minute trigger delays.
 - Dispatcher starts the first worker batch inline right after enqueueing tasks, so generation begins immediately when the job is picked up.
 - `DOCGEN_ACTIVE_JOB` blocks dispatching the next queued job until the current job finalizer has written `Ready` for the complete file set.
+- If the active job is waiting but worker tasks are missing, dispatcher/finalizer rebuild missing file tasks from `Agreements_Files` and starts a recovery batch.
 - Finalizer verifies the physical PDF exists in Drive; a prefilled `Agreements_Files[File]` path alone is never enough to mark a row `Ready`.
 - `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
