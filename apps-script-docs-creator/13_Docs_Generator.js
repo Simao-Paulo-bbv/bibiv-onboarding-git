@@ -101,7 +101,7 @@ function processDocGenerationJob_(runId, args) {
         );
       }
 
-      if (!templateRowsById[templateId]) throw new Error("Cannot find doc template " + templateId + ".");
+      const templateRow = templateRowsById[templateId] || buildFallbackTemplateRow_(runId, templateId);
 
       let generated = getGeneratedArtifactFromExistingRow_(fileRow);
       if (!generated) {
@@ -110,7 +110,7 @@ function processDocGenerationJob_(runId, args) {
           runId,
           fileRow,
           mainRowsById[fileOnboardingId],
-          templateRowsById[templateId]
+          templateRow
         );
         markAgreementFileGenerated_(runId, buildAgreementFileGeneratedRow_(fileRow, generated));
       } else {
@@ -372,6 +372,18 @@ function preloadTemplateRowsForFiles_(runId, files) {
     if (id) out[id] = row;
   });
   return out;
+}
+
+function buildFallbackTemplateRow_(runId, templateId) {
+  const cleanTemplateId = String(templateId || "").trim();
+  if (!cleanTemplateId) throw new Error("Missing Template_ID_Reference.");
+
+  log_(runId, "WARN", "DOCGEN_TEMPLATE_METADATA_FALLBACK", {
+    templateId: cleanTemplateId,
+    message: "Doc_Templates row was not returned by AppSheet; using Template_ID_Reference as Google Docs file id."
+  });
+
+  return { Template_ID: cleanTemplateId };
 }
 
 function generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow) {
