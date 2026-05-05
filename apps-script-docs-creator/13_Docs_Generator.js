@@ -124,6 +124,8 @@ function processDocGenerationJob_(runId, args) {
   enqueueAgreementFinalizer_(runId, args);
   if (dispatched > 0) {
     processAgreementFileTaskBatch_(runId, "dispatcher-inline");
+  } else {
+    processAgreementFinalizerQueue_(runId, "dispatcher-inline");
   }
 
   log_(runId, "INFO", "DOCGEN_DISPATCHED_FILE_TASKS", {
@@ -393,7 +395,7 @@ function processAgreementFileTaskBatch_(runId, source) {
 
   const hasMoreTasks = agreementFileTaskQueueHasItems_();
   if (hasMoreTasks) ensureAgreementFileWorkerTriggers_(1);
-  if (!hasMoreTasks) ensureAgreementFinalizerTrigger_();
+  if (!hasMoreTasks) processAgreementFinalizerQueue_(runId, "worker-inline");
   log_(runId, "INFO", "DOCGEN_FILE_TASK_BATCH_DONE", {
     source: source || "",
     processed: results.length,
@@ -496,9 +498,13 @@ function processAgreementFileTask_(runId, task) {
 function processNextAgreementFinalizer() {
   deleteTriggersForHandler_("processNextAgreementFinalizer");
   const runId = makeRunId_();
+  return processAgreementFinalizerQueue_(runId, "trigger");
+}
+
+function processAgreementFinalizerQueue_(runId, source) {
   const task = dequeueAgreementFinalizer_(runId);
   if (!task) {
-    log_(runId, "INFO", "DOCGEN_FINALIZER_QUEUE_EMPTY", {});
+    log_(runId, "INFO", "DOCGEN_FINALIZER_QUEUE_EMPTY", { source: source || "" });
     return { ok: true, empty: true };
   }
 
@@ -507,6 +513,11 @@ function processNextAgreementFinalizer() {
     requeueAgreementFinalizer_(runId, task);
   }
   if (agreementFinalizerQueueHasItems_()) ensureAgreementFinalizerTrigger_();
+  log_(runId, "INFO", "DOCGEN_FINALIZER_QUEUE_DONE", {
+    source: source || "",
+    complete: result.complete === true,
+    giveUp: result.giveUp === true
+  });
   return result;
 }
 

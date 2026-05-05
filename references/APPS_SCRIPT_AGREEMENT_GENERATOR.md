@@ -322,6 +322,7 @@ Current optimizations:
 - `FILE_WORKER_PARALLELISM = 1` is intentional: it avoids duplicate worker triggers, Apps Script trigger quota issues, and `already running` claim collisions.
 - A worker processes a batch of files from the active job, not just one file, so the remaining files do not wait for repeated 1-minute trigger delays.
 - Dispatcher starts the first worker batch inline right after enqueueing tasks, so generation begins immediately when the job is picked up.
+- Finalizer runs inline as soon as the worker queue is empty, so `Generated` files are promoted to `Ready` without waiting for a separate time trigger.
 - `DOCGEN_ACTIVE_JOB` blocks dispatching the next queued job until the current job finalizer has written `Ready` for the complete file set.
 - If the active job is waiting but worker tasks are missing, dispatcher/finalizer rebuild missing file tasks from `Agreements_Files` and starts a recovery batch.
 - Stale worker tasks whose `Agreements_Files[ID]` no longer exists are consumed without retry, so old queue entries cannot block the current job.
