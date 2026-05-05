@@ -1243,12 +1243,29 @@ function buildAgreementFileGeneratingRow_(fileRow) {
 
 function markAgreementFileGenerating_(runId, fileRow) {
   if (!CONFIG.DOC_GENERATOR.FILE_PROGRESS_STATUSES_ENABLED) return;
+  if (!shouldWriteAgreementFileProgressStatus_("generating")) return;
   markAgreementFileProgressStatus_(runId, buildAgreementFileGeneratingRow_(fileRow), "DOCGEN_FILE_GENERATING");
 }
 
 function markAgreementFileGenerated_(runId, row) {
   if (!CONFIG.DOC_GENERATOR.FILE_PROGRESS_STATUSES_ENABLED) return;
+  if (!shouldWriteAgreementFileProgressStatus_("generated")) {
+    log_(runId, "INFO", "DOCGEN_FILE_GENERATED_DEFERRED_TO_READY_BATCH", {
+      id: row && row.ID || "",
+      status: row && row.File_status || "",
+      file: row && row.File || ""
+    });
+    return;
+  }
   markAgreementFileProgressStatus_(runId, row, "DOCGEN_FILE_GENERATED");
+}
+
+function shouldWriteAgreementFileProgressStatus_(stage) {
+  const mode = String(CONFIG.DOC_GENERATOR.FILE_PROGRESS_UPDATE_MODE || "all").trim().toLowerCase();
+  if (mode === "off" || mode === "none") return false;
+  if (mode === "generating_only") return stage === "generating";
+  if (mode === "generated_only") return stage === "generated";
+  return true;
 }
 
 function markAgreementFileProgressStatus_(runId, row, eventName) {

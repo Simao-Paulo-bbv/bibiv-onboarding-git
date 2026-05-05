@@ -26,6 +26,7 @@ const CONFIG = {
     FILE_STATUS_READY: "Ready",
     FILE_STATUS_FAILED: "",
     FILE_PROGRESS_STATUSES_ENABLED: true,
+    FILE_PROGRESS_UPDATE_MODE: "generating_only",
     SIGNED_DOCUMENT_STATUS_WAITING: "Waiting for upload",
     ITEM_STATUS_FILE_CREATED: "Agreement file created",
     MAIN_STATUS_AGREEMENTS_GENERATED: "Agreements Generated",
