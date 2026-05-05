@@ -16,7 +16,9 @@ const DOCGEN_TABLES = {
 const DOCGEN_RUNTIME_CACHE = {
   projectRootFolder: null,
   folderByPath: {},
-  sheetValuesByName: {}
+  sheetValuesByName: {},
+  mainRowsById: {},
+  templateRowsById: {}
 };
 
 function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId) {
@@ -59,7 +61,7 @@ function processNextQueuedDocGenerationJob() {
       claimKey = claimDocGenerationJob_(runId, args);
       let result;
       try {
-        result = processDocGenerationJob_(runId, args);
+        result = processDocGenerationJob_(runId, args, workerStartedAt);
         workerResults.push(result);
       } catch (err) {
         requeueDocGenerationJobAfterFailure_(runId, args, err);
@@ -98,7 +100,7 @@ function processNextQueuedDocGenerationJob() {
   }
 }
 
-function processDocGenerationJob_(runId, args) {
+function processDocGenerationJob_(runId, args, workerStartedAt) {
   const jobStartedAt = Date.now();
   log_(runId, "INFO", "DOCGEN_START", args);
 
@@ -109,7 +111,7 @@ function processDocGenerationJob_(runId, args) {
   }
 
   const maxFiles = Math.max(1, Number(CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN || 3));
-  const filesToProcess = files.slice(0, maxFiles);
+  const filesToProcess = selectFilesForThisPass_(runId, files, maxFiles, workerStartedAt);
   const shouldContinue = files.length > filesToProcess.length;
   const mainRowsById = {};
   const templateRowsById = preloadTemplateRowsForFiles_(runId, filesToProcess);
@@ -204,6 +206,22 @@ function processDocGenerationJob_(runId, args) {
     continuation: shouldContinue,
     results: results
   };
+}
+
+function selectFilesForThisPass_(runId, files, maxFiles, workerStartedAt) {
+  const selected = [];
+  const limit = Math.max(1, Number(maxFiles || 1));
+  for (let i = 0; i < files.length && selected.length < limit; i++) {
+    if (selected.length > 0 && shouldYieldDocGenerationWorker_(workerStartedAt)) {
+      log_(runId, "INFO", "DOCGEN_CHUNK_TIME_BUDGET_REACHED", {
+        selected: selected.length,
+        pendingAtStart: files.length
+      });
+      break;
+    }
+    selected.push(files[i]);
+  }
+  return selected;
 }
 
 function shouldYieldDocGenerationWorker_(startedAt) {
@@ -411,21 +429,24 @@ function preloadTemplateRowsForFiles_(runId, files) {
   const seen = {};
   files.forEach(fileRow => {
     const id = String(getField_(fileRow, "Template_ID_Reference") || "").trim();
-    if (!id || seen[id]) return;
+    if (!id || seen[id] || DOCGEN_RUNTIME_CACHE.templateRowsById[id]) return;
     seen[id] = true;
     ids.push(id);
   });
 
-  if (!ids.length) return {};
+  if (!ids.length) return Object.assign({}, DOCGEN_RUNTIME_CACHE.templateRowsById);
 
   const sheetRows = findRowsByValuesFromSheet_(runId, DOCGEN_TABLES.DOC_TEMPLATES, "Template_ID", ids);
   if (sheetRows) {
     const fromSheet = {};
     sheetRows.forEach(row => {
       const id = getField_(row, "Template_ID");
-      if (id) fromSheet[id] = row;
+      if (id) {
+        fromSheet[id] = row;
+        DOCGEN_RUNTIME_CACHE.templateRowsById[id] = row;
+      }
     });
-    return fromSheet;
+    return Object.assign({}, DOCGEN_RUNTIME_CACHE.templateRowsById);
   }
 
   const selector = 'FILTER("' + DOCGEN_TABLES.DOC_TEMPLATES + '", OR(' +
@@ -435,22 +456,34 @@ function preloadTemplateRowsForFiles_(runId, files) {
   const out = {};
   rows.forEach(row => {
     const id = getField_(row, "Template_ID");
-    if (id) out[id] = row;
+    if (id) {
+      out[id] = row;
+      DOCGEN_RUNTIME_CACHE.templateRowsById[id] = row;
+    }
   });
-  return out;
+  return Object.assign({}, DOCGEN_RUNTIME_CACHE.templateRowsById);
 }
 
 function findMainOnboardingRow_(runId, onboardingId) {
   const cleanId = String(onboardingId || "").trim();
-  const sheetRows = findRowsByValuesFromSheet_(runId, DOCGEN_TABLES.MAIN, "ID", [cleanId]);
-  if (sheetRows && sheetRows.length) return sheetRows[0];
+  if (DOCGEN_RUNTIME_CACHE.mainRowsById[cleanId]) {
+    return DOCGEN_RUNTIME_CACHE.mainRowsById[cleanId];
+  }
 
-  return findRequiredSingleRow_(
+  const sheetRows = findRowsByValuesFromSheet_(runId, DOCGEN_TABLES.MAIN, "ID", [cleanId]);
+  if (sheetRows && sheetRows.length) {
+    DOCGEN_RUNTIME_CACHE.mainRowsById[cleanId] = sheetRows[0];
+    return sheetRows[0];
+  }
+
+  const row = findRequiredSingleRow_(
     runId,
     DOCGEN_TABLES.MAIN,
     "[ID] = " + appSheetQuote_(cleanId),
     "main onboarding row " + cleanId
   );
+  DOCGEN_RUNTIME_CACHE.mainRowsById[cleanId] = row;
+  return row;
 }
 
 function findPendingAgreementFileRowsFromSheet_(runId, args) {
