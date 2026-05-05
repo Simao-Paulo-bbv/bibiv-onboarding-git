@@ -52,19 +52,29 @@ function authorizeDocGenerator() {
   const root = DriveApp.getFolderById(CONFIG.DOC_GENERATOR.OUTPUT_ROOT_FOLDER_ID);
   result.projectRootFolderName = root.getName();
 
-  const spreadsheet = SpreadsheetApp.openById(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID);
-  result.dataSpreadsheetName = spreadsheet.getName();
+  const metadata = fetchDocGeneratorSpreadsheetMetadata_(runId);
+  result.dataSpreadsheetName = metadata && metadata.properties && metadata.properties.title || "";
+  const availableSheets = {};
+  (metadata && metadata.sheets || []).forEach(sheet => {
+    const title = sheet && sheet.properties && sheet.properties.title;
+    if (title) availableSheets[title] = true;
+  });
 
   Object.keys(CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES || {}).forEach(tableName => {
     const sheetName = CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES[tableName];
-    const sheet = spreadsheet.getSheetByName(sheetName);
-    result.sheets[tableName] = sheet ? {
+    if (!availableSheets[sheetName]) {
+      result.sheets[tableName] = {
+        sheetName: sheetName,
+        missing: true
+      };
+      return;
+    }
+
+    const values = fetchDocGeneratorSheetValues_(runId, sheetName);
+    result.sheets[tableName] = {
       sheetName: sheetName,
-      lastRow: sheet.getLastRow(),
-      lastColumn: sheet.getLastColumn()
-    } : {
-      sheetName: sheetName,
-      missing: true
+      rowsRead: values.length,
+      columnsRead: values.length ? values[0].length : 0
     };
   });
 

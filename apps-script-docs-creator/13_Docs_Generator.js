@@ -16,7 +16,7 @@ const DOCGEN_TABLES = {
 const DOCGEN_RUNTIME_CACHE = {
   projectRootFolder: null,
   folderByPath: {},
-  dataSpreadsheet: null
+  sheetValuesByName: {}
 };
 
 function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId) {
@@ -493,16 +493,7 @@ function findRowsFromSheet_(runId, tableName, predicate) {
   if (!sheetName) return null;
 
   try {
-    const ss = getDocGeneratorDataSpreadsheet_();
-    if (!ss) return null;
-
-    const sheet = ss.getSheetByName(sheetName);
-    if (!sheet) {
-      log_(runId, "WARN", "DOCGEN_SHEET_READ_NO_SHEET", { tableName: tableName, sheetName: sheetName });
-      return null;
-    }
-
-    const values = sheet.getDataRange().getValues();
+    const values = fetchDocGeneratorSheetValues_(runId, sheetName);
     if (values.length < 2) {
       log_(runId, "INFO", "DOCGEN_SHEET_FIND", { tableName: tableName, sheetName: sheetName, rows: 0 });
       return [];
@@ -539,13 +530,64 @@ function getSheetNameForDocgenTable_(tableName) {
   return String(map[tableName] || tableName || "").trim();
 }
 
-function getDocGeneratorDataSpreadsheet_() {
+function fetchDocGeneratorSheetValues_(runId, sheetName) {
+  const cleanSheetName = String(sheetName || "").trim();
+  if (!cleanSheetName) return [];
+  if (DOCGEN_RUNTIME_CACHE.sheetValuesByName[cleanSheetName]) {
+    return DOCGEN_RUNTIME_CACHE.sheetValuesByName[cleanSheetName];
+  }
+
+  const id = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
+  if (!id) return [];
+
+  const range = quoteSheetNameForA1_(cleanSheetName) + "!A:ZZ";
+  const url = "https://sheets.googleapis.com/v4/spreadsheets/" + encodeURIComponent(id) +
+    "/values/" + encodeURIComponent(range) +
+    "?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING";
+  const response = UrlFetchApp.fetch(url, {
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  const text = response.getContentText() || "";
+  if (code !== 200) {
+    throw new Error("Sheets API read failed for " + cleanSheetName + " httpCode=" + code + " body=" + text.slice(0, 500));
+  }
+
+  const parsed = safeJsonParse_(text) || {};
+  const values = parsed.values || [];
+  DOCGEN_RUNTIME_CACHE.sheetValuesByName[cleanSheetName] = values;
+  log_(runId, "INFO", "DOCGEN_SHEETS_API_READ", { sheetName: cleanSheetName, rows: values.length });
+  return values;
+}
+
+function fetchDocGeneratorSpreadsheetMetadata_(runId) {
   const id = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
   if (!id) return null;
-  if (!DOCGEN_RUNTIME_CACHE.dataSpreadsheet) {
-    DOCGEN_RUNTIME_CACHE.dataSpreadsheet = SpreadsheetApp.openById(id);
+  const url = "https://sheets.googleapis.com/v4/spreadsheets/" + encodeURIComponent(id) +
+    "?fields=properties.title,sheets.properties.title";
+  const response = UrlFetchApp.fetch(url, {
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+
+  const code = response.getResponseCode();
+  const text = response.getContentText() || "";
+  if (code !== 200) {
+    throw new Error("Sheets API metadata read failed httpCode=" + code + " body=" + text.slice(0, 500));
   }
-  return DOCGEN_RUNTIME_CACHE.dataSpreadsheet;
+
+  const parsed = safeJsonParse_(text) || {};
+  log_(runId, "INFO", "DOCGEN_SHEETS_API_METADATA_READ", {
+    title: parsed.properties && parsed.properties.title || "",
+    sheets: (parsed.sheets || []).length
+  });
+  return parsed;
+}
+
+function quoteSheetNameForA1_(sheetName) {
+  return "'" + String(sheetName || "").replace(/'/g, "''") + "'";
 }
 
 function buildFallbackTemplateRow_(runId, templateId) {
