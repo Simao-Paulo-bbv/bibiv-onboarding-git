@@ -33,13 +33,33 @@ generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId)
 
 It only enqueues the job and returns quickly. It does not generate PDFs inline.
 
-The time-driven worker does the real generation:
+The first time-driven worker dispatches file tasks:
 
 ```text
 processNextQueuedDocGenerationJob()
 ```
 
-The worker is created automatically by `ensureDocGenerationQueueTrigger()` and runs every minute. It processes one queued `Job_ID` per execution.
+It is created automatically by `ensureDocGenerationQueueTrigger()` and runs every minute. It takes one queued `Job_ID`, finds its pending `Agreements_Files` rows, and enqueues one file task per document.
+
+The actual PDF work is done by bounded per-file workers:
+
+```text
+processNextAgreementFileTask()
+```
+
+Default parallelism is intentionally low:
+
+```text
+CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM = 2
+```
+
+The finalizer is:
+
+```text
+processNextAgreementFinalizer()
+```
+
+It checks whether all expected files for a `Job_ID` have a stored file path, creates missing `Signed_Documents` upload rows, batch marks `Agreements_Files` as `Ready`, batch marks `Generation_Job_Items` as `Agreement file created`, and only then updates the main row to `Agreements Generated`.
 
 Recommended AppSheet parameters:
 
@@ -49,7 +69,7 @@ jobId             = [Job_ID]
 agreementFileId   = [ID]
 ```
 
-The script uses `jobId` first. One queued job generates all pending agreement files for that job.
+The script uses `jobId` first. One queued job dispatches all pending agreement files for that job, while per-file workers do the heavier Google Docs copy/export work.
 
 ## Required config before production
 
@@ -155,7 +175,7 @@ Return value can be ignored for now; the script updates AppSheet rows directly t
 
 For a queued job:
 
-1. Worker finds all `Agreements_Files` rows where:
+1. Dispatcher finds all `Agreements_Files` rows where:
 
    ```text
    File_status = "Set Up"
@@ -163,7 +183,9 @@ For a queued job:
    Job_ID = current Job_ID
    ```
 
-2. For each pending row:
+2. Dispatcher enqueues one per-file task for each pending row.
+
+3. Each per-file worker:
    - marks the file row as `Generating` when progress statuses are enabled,
    - reads `Template_ID_Reference`,
    - finds the matching `Doc_Templates[Template_ID]`,
@@ -173,16 +195,16 @@ For a queued job:
    - writes the PDF to `Agreements_Files[File]` path,
    - marks the file row as `Generated`.
 
-3. Creates missing `Signed_Documents` upload rows for successfully generated agreement docs.
+4. Finalizer waits until all files for the job are generated, then creates missing `Signed_Documents` upload rows for generated agreement docs.
 
-4. Batch marks:
+5. Finalizer batch marks:
 
    ```text
    Agreements_Files[File_status] = "Ready"
    Generation_Job_Items[Item_Status] = "Agreement file created"
    ```
 
-5. If all generated files for the job are ready, updates:
+6. If all generated files for the job are ready, updates:
 
    ```text
    BIBIV_onboarding_APP[Status] = "Agreements Generated"
@@ -203,7 +225,7 @@ Ready       -> final state used by existing AppSheet completion/email bots
 
 `Ready` remains the only generated-document status that should drive AppSheet completion and sending bots. Do not make bots react to `Generating` or `Generated`.
 
-Before enabling visible progress in AppSheet, add `Generating` and `Generated` to the `Agreements_Files[File_status]` enum. Progress status updates are non-blocking in the script, so generation continues even if AppSheet rejects those intermediate enum values.
+Before relying on visible progress in AppSheet, add `Generating` and `Generated` to the `Agreements_Files[File_status]` enum. If AppSheet rejects `Generated`, the script falls back to saving only `Agreements_Files[File]`; the finalizer can still finish once every generated file has a path. Adding the enum values is still recommended so users can see live progress clearly.
 
 ## Signed upload placeholders
 
@@ -285,11 +307,12 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 
 Current optimizations:
 
-- `Doc_Templates` rows are preloaded with one AppSheet `Find` per job.
+- Jobs are dispatched quickly and the slow Google Docs copy/export work runs in bounded per-file workers.
+- `FILE_WORKER_PARALLELISM = 2` lets one onboarding generate two PDFs at a time without unbounded trigger fan-out.
 - `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
 - Working Google Docs copies are trashed after PDF export by default (`KEEP_WORKING_DOC_COPY=false`).
 - PDF export targets the first Google Docs tab by URL (`export?format=pdf&tab=...`) to avoid the Docs Tabs cover page.
-- Jobs are serialized through a script-property queue and 1-minute worker trigger, so one onboarding finishes and can send mail before the next starts.
+- `Ready` is written only by the finalizer, so existing completion/email bots do not send before all generated files and upload placeholders exist.
 
 Remaining bottleneck: each PDF still requires a Google Docs template copy, text replacement, save, and PDF export. That is the slowest part and cannot be made instant without moving to pre-rendered/static PDFs or a lower-fidelity HTML/PDF renderer.

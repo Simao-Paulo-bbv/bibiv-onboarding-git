@@ -130,10 +130,11 @@ Key columns: `File_status` (`Set Up` → optional `Generating` → optional `Gen
      - `Template_ID_Reference` = `[_THISROW].[Template_ID]`
   2. Set `Item_Status = "File request created"`
 
-### 4. `Generate Applications` / `Generate Agreements` (existing — keep as-is)
-- **Event**: `Agreements_Files` — Adds only, condition by Category
-- **Process**: existing file-factory logic; on success sets `File_status = "Ready"` and updates the parent `Generation_Job_Items` row (`Item_Status = "Agreement file created"`)
-- Agreement generation via Apps Script may write intermediate `Generating`/`Generated` statuses. AppSheet completion/email bots must continue to key only on `Ready`.
+### 4. `Generate Applications` / `Generate Agreements`
+- **Applications**: existing AppSheet file-factory bot can stay as-is.
+- **Agreements**: legacy native AppSheet PDF generator should stay disabled; `Generate Agreements - Apps Script` calls `generateAgreementFilesFromAppSheet()`.
+- Apps Script dispatches per-file worker tasks, writes intermediate `Generating`/`Generated` statuses when accepted by AppSheet, creates missing `Signed_Documents` rows, and finalizes with `Ready`.
+- AppSheet completion/email bots must continue to key only on `Ready`.
 
 ### 5. `JOB - finish and continue queue`
 - **Event**: `Generation_Job_Items` — Updates only

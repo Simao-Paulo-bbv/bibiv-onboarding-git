@@ -61,94 +61,32 @@ function processNextQueuedDocGenerationJob() {
   } finally {
     releaseDocGenerationJob_(claimKey);
     releaseGlobalGenerationLock_(globalLock);
+  }
 }
 
 function processDocGenerationJob_(runId, args) {
-    log_(runId, "INFO", "DOCGEN_START", args);
+  log_(runId, "INFO", "DOCGEN_START", args);
 
-    const files = findPendingAgreementFileRows_(runId, args);
-    if (!files.length) {
-      log_(runId, "INFO", "DOCGEN_NO_PENDING_FILES", args);
-      return { ok: true, processed: 0, message: "No pending Agreement files." };
-    }
-
-    const mainRowsById = {};
-    const templateRowsById = preloadTemplateRowsForFiles_(runId, files);
-    const results = [];
-    const readyFileUpdates = [];
-    const readyJobItemUpdates = [];
-
-    files.forEach(fileRow => {
-      const fileId = getField_(fileRow, "ID");
-      try {
-        const fileOnboardingId = getField_(fileRow, "Onboarding_ID") || args.onboardingId;
-        const templateId = getField_(fileRow, "Template_ID_Reference");
-
-        if (!fileOnboardingId) throw new Error("Missing Onboarding_ID.");
-        if (!templateId) throw new Error("Missing Template_ID_Reference.");
-
-        if (!mainRowsById[fileOnboardingId]) {
-          mainRowsById[fileOnboardingId] = findRequiredSingleRow_(
-            runId,
-            DOCGEN_TABLES.MAIN,
-            "[ID] = " + appSheetQuote_(fileOnboardingId),
-            "main onboarding row " + fileOnboardingId
-          );
-        }
-
-        if (!templateRowsById[templateId]) throw new Error("Cannot find doc template " + templateId + ".");
-
-        let generated = getGeneratedArtifactFromExistingRow_(fileRow);
-        if (!generated) {
-          markAgreementFileGenerating_(runId, fileRow);
-          generated = generatePdfForAgreementFileRow_(
-            runId,
-            fileRow,
-            mainRowsById[fileOnboardingId],
-            templateRowsById[templateId]
-          );
-          markAgreementFileGenerated_(runId, buildAgreementFileGeneratedRow_(fileRow, generated));
-        } else {
-          log_(runId, "INFO", "DOCGEN_FILE_ALREADY_GENERATED_FINALIZING", {
-            agreementFileId: fileId,
-            file: generated.relativePath
-          });
-        }
-
-        readyFileUpdates.push(buildAgreementFileReadyRow_(fileRow, generated));
-        readyJobItemUpdates.push(buildGenerationJobItemCreatedRow_(fileRow));
-
-        results.push({
-          id: fileId,
-          ok: true,
-          file: generated.relativePath,
-          pdfId: generated.pdfId,
-          docId: generated.docId
-        });
-      } catch (err) {
-        markAgreementFileFailed_(runId, fileRow, err);
-        results.push({ id: fileId || "", ok: false, error: String(err && err.message || err) });
-      }
-    });
-
-    createSignedDocumentUploadRowsForReadyAgreements_(runId, files, readyFileUpdates);
-    batchMarkAgreementFilesReady_(runId, readyFileUpdates);
-    batchMarkGenerationJobItemsCreated_(runId, readyJobItemUpdates);
-    finishMainRowsWhenAllAgreementsReady_(runId, files, args, readyFileUpdates);
-
-    const failed = results.filter(r => !r.ok);
-    log_(runId, failed.length ? "ERROR" : "INFO", "DOCGEN_DONE", {
-      processed: results.length,
-      failed: failed.length
-    });
-
-    return {
-      ok: failed.length === 0,
-      processed: results.length,
-      failed: failed.length,
-      results: results
-    };
+  const files = findPendingAgreementFileRows_(runId, args);
+  if (!files.length) {
+    enqueueAgreementFinalizer_(runId, args);
+    ensureAgreementFinalizerTrigger_();
+    log_(runId, "INFO", "DOCGEN_NO_PENDING_FILES_FINALIZER_ENQUEUED", args);
+    return { ok: true, dispatched: 0, message: "No pending Agreement files." };
   }
+
+  const dispatched = enqueueAgreementFileTasks_(runId, args, files);
+  enqueueAgreementFinalizer_(runId, args);
+  ensureAgreementFileWorkerTriggers_(dispatched);
+  ensureAgreementFinalizerTrigger_();
+
+  log_(runId, "INFO", "DOCGEN_DISPATCHED_FILE_TASKS", {
+    jobId: args.jobId || "",
+    onboardingId: args.onboardingId || "",
+    dispatched: dispatched
+  });
+
+  return { ok: true, dispatched: dispatched };
 }
 
 function tryAcquireGlobalGenerationLock_(runId) {
@@ -293,6 +231,338 @@ function requeueDocGenerationJobAfterFailure_(runId, args, err) {
   }
 }
 
+function processNextAgreementFileTask() {
+  const runId = makeRunId_();
+  const task = dequeueAgreementFileTask_(runId);
+  if (!task) {
+    log_(runId, "INFO", "DOCGEN_FILE_TASK_QUEUE_EMPTY", {});
+    return { ok: true, empty: true };
+  }
+
+  let claimKey = "";
+  try {
+    claimKey = claimAgreementFileTask_(runId, task);
+    const result = processAgreementFileTask_(runId, task);
+    enqueueAgreementFinalizer_(runId, task);
+    ensureAgreementFinalizerTrigger_();
+    return result;
+  } catch (err) {
+    requeueAgreementFileTaskAfterFailure_(runId, task, err);
+    enqueueAgreementFinalizer_(runId, task);
+    ensureAgreementFinalizerTrigger_();
+    log_(runId, "ERROR", "DOCGEN_FILE_TASK_FAILED", {
+      agreementFileId: task.agreementFileId || "",
+      error: String(err && err.message || err).slice(0, 900)
+    });
+    return { ok: false, agreementFileId: task.agreementFileId || "", error: String(err && err.message || err) };
+  } finally {
+    releaseDocGenerationJob_(claimKey);
+    if (agreementFileTaskQueueHasItems_()) ensureAgreementFileWorkerTriggers_(1);
+  }
+}
+
+function processAgreementFileTask_(runId, task) {
+  const fileId = String(task.agreementFileId || "").trim();
+  if (!fileId) throw new Error("Missing agreementFileId in file task.");
+
+  const fileRow = findRequiredSingleRow_(
+    runId,
+    DOCGEN_TABLES.AGREEMENTS_FILES,
+    "[ID] = " + appSheetQuote_(fileId),
+    "agreement file row " + fileId
+  );
+
+  const existing = getGeneratedArtifactFromExistingRow_(fileRow);
+  if (existing) {
+    log_(runId, "INFO", "DOCGEN_FILE_ALREADY_GENERATED", {
+      agreementFileId: fileId,
+      file: existing.relativePath
+    });
+    return { ok: true, generated: false, file: existing.relativePath };
+  }
+
+  const onboardingId = getField_(fileRow, "Onboarding_ID") || task.onboardingId;
+  const templateId = getField_(fileRow, "Template_ID_Reference");
+  if (!onboardingId) throw new Error("Missing Onboarding_ID.");
+  if (!templateId) throw new Error("Missing Template_ID_Reference.");
+
+  const mainRow = findRequiredSingleRow_(
+    runId,
+    DOCGEN_TABLES.MAIN,
+    "[ID] = " + appSheetQuote_(onboardingId),
+    "main onboarding row " + onboardingId
+  );
+  const templateRow = findRequiredSingleRow_(
+    runId,
+    DOCGEN_TABLES.DOC_TEMPLATES,
+    "[Template_ID] = " + appSheetQuote_(templateId),
+    "doc template " + templateId
+  );
+
+  markAgreementFileGenerating_(runId, fileRow);
+  const generated = generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow);
+  markAgreementFileGenerated_(runId, buildAgreementFileGeneratedRow_(fileRow, generated));
+
+  return {
+    ok: true,
+    generated: true,
+    agreementFileId: fileId,
+    file: generated.relativePath,
+    pdfId: generated.pdfId,
+    docId: generated.docId
+  };
+}
+
+function processNextAgreementFinalizer() {
+  const runId = makeRunId_();
+  const task = dequeueAgreementFinalizer_(runId);
+  if (!task) {
+    log_(runId, "INFO", "DOCGEN_FINALIZER_QUEUE_EMPTY", {});
+    return { ok: true, empty: true };
+  }
+
+  const result = finalizeAgreementJobIfComplete_(runId, task);
+  if (!result.complete && !result.giveUp) {
+    requeueAgreementFinalizer_(runId, task);
+  }
+  if (agreementFinalizerQueueHasItems_()) ensureAgreementFinalizerTrigger_();
+  return result;
+}
+
+function finalizeAgreementJobIfComplete_(runId, task) {
+  const jobId = String(task.jobId || "").trim();
+  const onboardingId = String(task.onboardingId || "").trim();
+  if (!jobId && !onboardingId) throw new Error("Finalizer requires jobId or onboardingId.");
+
+  const files = findAllAgreementFileRowsForJob_(runId, task);
+  const items = jobId ? findGenerationJobItemsForJob_(runId, jobId) : [];
+  const expected = items.length || files.length;
+  const readyFileUpdates = [];
+  const readyJobItemUpdates = [];
+
+  files.forEach(fileRow => {
+    const artifact = getGeneratedArtifactFromExistingRow_(fileRow);
+    if (!artifact) return;
+    readyFileUpdates.push(buildAgreementFileReadyRow_(fileRow, artifact));
+    readyJobItemUpdates.push(buildGenerationJobItemCreatedRow_(fileRow));
+  });
+
+  if (!expected || readyFileUpdates.length < expected) {
+    const retryCount = Number(task.finalizerRetryCount || 0) + 1;
+    const maxRetries = Number(CONFIG.DOC_GENERATOR.FINALIZER_REQUEUE_MAX_RETRIES || 12);
+    const giveUp = retryCount > maxRetries;
+    log_(runId, giveUp ? "ERROR" : "INFO", giveUp ? "DOCGEN_FINALIZER_GIVE_UP" : "DOCGEN_FINALIZER_WAITING", {
+      jobId: jobId,
+      onboardingId: onboardingId,
+      expectedItems: expected,
+      generatedFiles: readyFileUpdates.length,
+      retryCount: retryCount
+    });
+    task.finalizerRetryCount = retryCount;
+    return { ok: !giveUp, complete: false, giveUp: giveUp };
+  }
+
+  createSignedDocumentUploadRowsForReadyAgreements_(runId, files, readyFileUpdates);
+  batchMarkAgreementFilesReady_(runId, readyFileUpdates);
+  batchMarkGenerationJobItemsCreated_(runId, readyJobItemUpdates);
+  finishMainRowsWhenAllAgreementsReady_(runId, files, task, readyFileUpdates);
+
+  log_(runId, "INFO", "DOCGEN_FINALIZED_JOB", {
+    jobId: jobId,
+    onboardingId: onboardingId,
+    readyFiles: readyFileUpdates.length
+  });
+
+  return { ok: true, complete: true, readyFiles: readyFileUpdates.length };
+}
+
+function enqueueAgreementFileTasks_(runId, args, files) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const queue = readAgreementFileTaskQueue_(props);
+    const queuedIds = {};
+    queue.forEach(item => {
+      if (item.agreementFileId) queuedIds[String(item.agreementFileId)] = true;
+    });
+
+    let added = 0;
+    (files || []).forEach(fileRow => {
+      const fileId = String(getField_(fileRow, "ID") || "").trim();
+      if (!fileId || queuedIds[fileId]) return;
+      const existing = getGeneratedArtifactFromExistingRow_(fileRow);
+      if (existing) return;
+      queuedIds[fileId] = true;
+      queue.push({
+        onboardingId: getField_(fileRow, "Onboarding_ID") || args.onboardingId || "",
+        jobId: getField_(fileRow, "Job_ID") || args.jobId || "",
+        agreementFileId: fileId,
+        queuedAt: new Date().toISOString()
+      });
+      added++;
+    });
+
+    writeAgreementFileTaskQueue_(props, queue);
+    log_(runId, "INFO", "DOCGEN_FILE_TASK_QUEUE_STATE", { size: queue.length, added: added });
+    return added;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function dequeueAgreementFileTask_(runId) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const queue = readAgreementFileTaskQueue_(props);
+    const next = queue.shift();
+    writeAgreementFileTaskQueue_(props, queue);
+    log_(runId, "INFO", "DOCGEN_FILE_TASK_DEQUEUE", { remaining: queue.length, next: next || null });
+    return next || null;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function readAgreementFileTaskQueue_(props) {
+  return safeJsonParse_(props.getProperty(CONFIG.DOC_GENERATOR.FILE_TASK_QUEUE_KEY)) || [];
+}
+
+function writeAgreementFileTaskQueue_(props, queue) {
+  props.setProperty(CONFIG.DOC_GENERATOR.FILE_TASK_QUEUE_KEY, JSON.stringify(queue || []));
+}
+
+function agreementFileTaskQueueHasItems_() {
+  return readAgreementFileTaskQueue_(PropertiesService.getScriptProperties()).length > 0;
+}
+
+function claimAgreementFileTask_(runId, task) {
+  const key = "DOCGEN_FILE_CLAIM_" + String(task.agreementFileId || "unknown");
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const cache = CacheService.getScriptCache();
+    if (cache.get(key)) {
+      log_(runId, "INFO", "DOCGEN_FILE_ALREADY_RUNNING", { key: key });
+      throw new Error("Document file generation already running for this file.");
+    }
+    cache.put(key, "1", CONFIG.DOC_GENERATOR.JOB_CLAIM_TTL_SECONDS || 900);
+    return key;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function requeueAgreementFileTaskAfterFailure_(runId, task, err) {
+  const retryCount = Number(task.retryCount || 0) + 1;
+  const maxRetries = Number(CONFIG.DOC_GENERATOR.FILE_TASK_REQUEUE_MAX_RETRIES || 2);
+  if (retryCount > maxRetries) {
+    log_(runId, "ERROR", "DOCGEN_FILE_TASK_REQUEUE_LIMIT_REACHED", {
+      agreementFileId: task.agreementFileId || "",
+      retryCount: retryCount,
+      error: String(err && err.message || err).slice(0, 900)
+    });
+    return;
+  }
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const queue = readAgreementFileTaskQueue_(props);
+    const exists = queue.some(item => String(item.agreementFileId || "") === String(task.agreementFileId || ""));
+    if (!exists) {
+      task.retryCount = retryCount;
+      task.retryAfterError = String(err && err.message || err).slice(0, 300);
+      queue.push(task);
+      writeAgreementFileTaskQueue_(props, queue);
+    }
+    log_(runId, "ERROR", "DOCGEN_FILE_TASK_REQUEUED_AFTER_ERROR", {
+      agreementFileId: task.agreementFileId || "",
+      retryCount: retryCount,
+      error: String(err && err.message || err).slice(0, 900)
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function enqueueAgreementFinalizer_(runId, args) {
+  const key = args.jobId || args.onboardingId;
+  if (!key) return;
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const queue = readAgreementFinalizerQueue_(props);
+    const exists = queue.some(item => (item.jobId || item.onboardingId) === key);
+    if (!exists) {
+      queue.push({
+        onboardingId: args.onboardingId || "",
+        jobId: args.jobId || "",
+        queuedAt: new Date().toISOString(),
+        finalizerRetryCount: args.finalizerRetryCount || 0
+      });
+      writeAgreementFinalizerQueue_(props, queue);
+    }
+    log_(runId, "INFO", "DOCGEN_FINALIZER_QUEUE_STATE", { size: queue.length });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function dequeueAgreementFinalizer_(runId) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const queue = readAgreementFinalizerQueue_(props);
+    const next = queue.shift();
+    writeAgreementFinalizerQueue_(props, queue);
+    log_(runId, "INFO", "DOCGEN_FINALIZER_DEQUEUE", { remaining: queue.length, next: next || null });
+    return next || null;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function requeueAgreementFinalizer_(runId, task) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(CONFIG.LOCK_TIMEOUT_MS || 2000);
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const queue = readAgreementFinalizerQueue_(props);
+    const key = task.jobId || task.onboardingId;
+    const exists = queue.some(item => (item.jobId || item.onboardingId) === key);
+    if (!exists) {
+      queue.push(task);
+      writeAgreementFinalizerQueue_(props, queue);
+    }
+    log_(runId, "INFO", "DOCGEN_FINALIZER_REQUEUED", {
+      jobId: task.jobId || "",
+      onboardingId: task.onboardingId || "",
+      retryCount: task.finalizerRetryCount || 0
+    });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function readAgreementFinalizerQueue_(props) {
+  return safeJsonParse_(props.getProperty(CONFIG.DOC_GENERATOR.FINALIZER_QUEUE_KEY)) || [];
+}
+
+function writeAgreementFinalizerQueue_(props, queue) {
+  props.setProperty(CONFIG.DOC_GENERATOR.FINALIZER_QUEUE_KEY, JSON.stringify(queue || []));
+}
+
+function agreementFinalizerQueueHasItems_() {
+  return readAgreementFinalizerQueue_(PropertiesService.getScriptProperties()).length > 0;
+}
+
 function ensureDocGenerationQueueTrigger() {
   const handler = "processNextQueuedDocGenerationJob";
   const exists = ScriptApp.getProjectTriggers().some(trigger => trigger.getHandlerFunction() === handler);
@@ -301,6 +571,27 @@ function ensureDocGenerationQueueTrigger() {
     .timeBased()
     .everyMinutes(CONFIG.DOC_GENERATOR.QUEUE_TRIGGER_MINUTES || 1)
     .create();
+}
+
+function ensureAgreementFileWorkerTriggers_(taskCount) {
+  const handler = "processNextAgreementFileTask";
+  const parallelism = Math.max(1, Number(CONFIG.DOC_GENERATOR.FILE_WORKER_PARALLELISM || 2));
+  const existing = countTriggersForHandler_(handler);
+  const count = Math.min(Math.max(1, Number(taskCount || 1)), Math.max(0, parallelism - existing));
+  for (let i = 0; i < count; i++) {
+    ScriptApp.newTrigger(handler).timeBased().after(1).create();
+  }
+}
+
+function ensureAgreementFinalizerTrigger_() {
+  ScriptApp.newTrigger("processNextAgreementFinalizer")
+    .timeBased()
+    .after(CONFIG.DOC_GENERATOR.FINALIZER_REQUEUE_DELAY_MS || 60000)
+    .create();
+}
+
+function countTriggersForHandler_(handler) {
+  return ScriptApp.getProjectTriggers().filter(trigger => trigger.getHandlerFunction() === handler).length;
 }
 
 function findPendingAgreementFileRows_(runId, args) {
@@ -324,6 +615,28 @@ function findPendingAgreementFileRows_(runId, args) {
 
   const selector = 'FILTER("' + DOCGEN_TABLES.AGREEMENTS_FILES + '", AND(' + parts.join(", ") + "))";
   return callAppSheetFind_(runId, DOCGEN_TABLES.AGREEMENTS_FILES, selector);
+}
+
+function findAllAgreementFileRowsForJob_(runId, args) {
+  const parts = [
+    "[Category] = " + appSheetQuote_(CONFIG.DOC_GENERATOR.AGREEMENT_CATEGORY)
+  ];
+
+  if (args.jobId) {
+    parts.push("[Job_ID] = " + appSheetQuote_(args.jobId));
+  } else if (args.onboardingId) {
+    parts.push("[Onboarding_ID] = " + appSheetQuote_(args.onboardingId));
+  } else {
+    throw new Error("Pass Job_ID or Onboarding_ID.");
+  }
+
+  const selector = 'FILTER("' + DOCGEN_TABLES.AGREEMENTS_FILES + '", AND(' + parts.join(", ") + "))";
+  return callAppSheetFind_(runId, DOCGEN_TABLES.AGREEMENTS_FILES, selector);
+}
+
+function findGenerationJobItemsForJob_(runId, jobId) {
+  const selector = 'FILTER("' + DOCGEN_TABLES.GENERATION_JOB_ITEMS + '", [Job_ID] = ' + appSheetQuote_(jobId) + ")";
+  return callAppSheetFind_(runId, DOCGEN_TABLES.GENERATION_JOB_ITEMS, selector);
 }
 
 function preloadTemplateRowsForFiles_(runId, files) {
@@ -895,8 +1208,32 @@ function markAgreementFileGenerating_(runId, fileRow) {
 }
 
 function markAgreementFileGenerated_(runId, row) {
-  if (!CONFIG.DOC_GENERATOR.FILE_PROGRESS_STATUSES_ENABLED) return;
-  markAgreementFileProgressStatus_(runId, row, "DOCGEN_FILE_GENERATED");
+  if (!row || !row.ID) return;
+  if (!CONFIG.DOC_GENERATOR.FILE_PROGRESS_STATUSES_ENABLED) {
+    callAppSheet_(runId, DOCGEN_TABLES.AGREEMENTS_FILES, {
+      ID: row.ID,
+      File: row.File || ""
+    }, CONFIG.APPSHEET_ACTION_EDIT, row.ID);
+    return;
+  }
+  try {
+    callAppSheet_(runId, DOCGEN_TABLES.AGREEMENTS_FILES, row, CONFIG.APPSHEET_ACTION_EDIT, row.ID);
+    log_(runId, "INFO", "DOCGEN_FILE_GENERATED", {
+      id: row.ID,
+      status: row.File_status || "",
+      file: row.File || ""
+    });
+  } catch (e) {
+    log_(runId, "WARN", "DOCGEN_FILE_GENERATED_STATUS_UPDATE_FAILED_FALLING_BACK_TO_FILE_ONLY", {
+      id: row.ID,
+      status: row.File_status || "",
+      error: String(e && e.message || e).slice(0, 900)
+    });
+    callAppSheet_(runId, DOCGEN_TABLES.AGREEMENTS_FILES, {
+      ID: row.ID,
+      File: row.File || ""
+    }, CONFIG.APPSHEET_ACTION_EDIT, row.ID);
+  }
 }
 
 function markAgreementFileProgressStatus_(runId, row, eventName) {
@@ -920,7 +1257,13 @@ function markAgreementFileProgressStatus_(runId, row, eventName) {
 function getGeneratedArtifactFromExistingRow_(fileRow) {
   const status = String(getField_(fileRow, "File_status") || "").trim();
   const file = String(getField_(fileRow, "File") || "").trim();
-  if (status !== CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED || !file) return null;
+  if (!file) return null;
+  if (status === CONFIG.DOC_GENERATOR.FILE_STATUS_READY ||
+      status === CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATED ||
+      status === CONFIG.DOC_GENERATOR.FILE_STATUS_SET_UP ||
+      status === CONFIG.DOC_GENERATOR.FILE_STATUS_GENERATING) {
+    return { relativePath: file, pdfId: "", docId: "" };
+  }
   return { relativePath: file, pdfId: "", docId: "" };
 }
 
