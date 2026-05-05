@@ -84,7 +84,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 | `09_Logging.js` | Logger + sync_status marker append |
 | `10_Sheet_And_Header_Utils.js` | Header repair (non-destructive — never truncates) |
 | `11_Bank_Accounts.js` | Child table sync to AppSheet `Bank_Accounts` |
-| `12_Backfill_Existing.js` | Toggle-controlled backfill for legacy rows; fills blank fields only |
+| `12_Backfill_Existing.js` | Toggle-controlled backfill for legacy rows; currently OFF after representative-field catch-up |
 | `apps-script-docs-creator/` | Standalone Apps Script `BIBIV_Onboarding_DocsCreator` for Agreement PDFs |
 | `mf-relay/` | Cloud Run service (ID-token auth) for MF VAT bypass |
 

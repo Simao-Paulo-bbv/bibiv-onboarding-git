@@ -24,7 +24,7 @@ const CONFIG = {
   PENDING_SCAN_LAST_N: 5000, // for huge sheets: scan only last N rows for pending processing
 
   // Existing-row backfill (missing fields only; does NOT touch Status / AppSheet actions)
-  BACKFILL_EXISTING_ENABLED: true, // ON now to fill historical missing representative fields
+  BACKFILL_EXISTING_ENABLED: false, // OFF after historical representative-field backfill
   BACKFILL_EXISTING_MAX_ROWS_PER_RUN: 20,
   BACKFILL_EXISTING_SCAN_LAST_N: 5000,
   BACKFILL_EXISTING_USE_IBAN_API: true,
