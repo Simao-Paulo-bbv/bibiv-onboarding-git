@@ -67,8 +67,9 @@ function refreshNameApiOnly_(runId, mapping, dest, startedAt) {
   const scanLastN = Number(CONFIG.NAME_API_REFRESH_SCAN_LAST_N || 0) || 0;
   const scanRowStart = (scanLastN && lastRow > scanLastN) ? Math.max(2, lastRow - scanLastN + 1) : 2;
   const overwriteExisting = CONFIG.NAME_API_REFRESH_OVERWRITE_EXISTING !== false;
-  const targetNips = buildNameApiRefreshTargetNips_();
-  const hasTargetNips = Object.keys(targetNips).length > 0;
+  const fromList = CONFIG.NAME_API_REFRESH_FROM_LIST === true;
+  const targetNips = fromList ? buildNameApiRefreshTargetNips_() : {};
+  const hasTargetNips = fromList && Object.keys(targetNips).length > 0;
 
   const minIdx = Math.min(nameIdx, nipIdx) + 1;
   const maxIdx = Math.max(nameIdx, nipIdx) + 1;
@@ -85,6 +86,10 @@ function refreshNameApiOnly_(runId, mapping, dest, startedAt) {
     const currentName = String(row[(nameIdx + 1) - minIdx] || "").trim();
     const nip = normalizeNipForApi_(row[(nipIdx + 1) - minIdx]);
     if (!nip) {
+      out.skipped++;
+      continue;
+    }
+    if (fromList && !hasTargetNips) {
       out.skipped++;
       continue;
     }
