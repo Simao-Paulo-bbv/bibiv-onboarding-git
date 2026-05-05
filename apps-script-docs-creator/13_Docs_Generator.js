@@ -403,12 +403,20 @@ function processAgreementFileTask_(runId, task) {
   const fileId = String(task.agreementFileId || "").trim();
   if (!fileId) throw new Error("Missing agreementFileId in file task.");
 
-  const fileRow = findRequiredSingleRow_(
+  const fileRow = findOptionalSingleRow_(
     runId,
     DOCGEN_TABLES.AGREEMENTS_FILES,
     "[ID] = " + appSheetQuote_(fileId),
     "agreement file row " + fileId
   );
+  if (!fileRow) {
+    log_(runId, "WARN", "DOCGEN_STALE_FILE_TASK_SKIPPED", {
+      agreementFileId: fileId,
+      jobId: task.jobId || "",
+      onboardingId: task.onboardingId || ""
+    });
+    return { ok: true, stale: true, agreementFileId: fileId };
+  }
 
   const existing = getGeneratedArtifactFromExistingRow_(fileRow);
   if (existing) {
@@ -1733,8 +1741,21 @@ function callAppSheetFind_(runId, tableName, selector) {
 }
 
 function findRequiredSingleRow_(runId, tableName, condition, label) {
+  const row = findOptionalSingleRow_(runId, tableName, condition, label);
+  if (!row) throw new Error("Cannot find " + label + ".");
+  return row;
+}
+
+function findOptionalSingleRow_(runId, tableName, condition, label) {
   const rows = callAppSheetFind_(runId, tableName, 'FILTER("' + tableName + '", ' + condition + ")");
-  if (!rows.length) throw new Error("Cannot find " + label + ".");
+  if (!rows.length) {
+    log_(runId, "INFO", "APPSHEET_OPTIONAL_ROW_NOT_FOUND", {
+      tableName: tableName,
+      label: label || "",
+      condition: condition || ""
+    });
+    return null;
+  }
   return rows[0];
 }
 
