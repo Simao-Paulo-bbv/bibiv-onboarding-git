@@ -70,31 +70,42 @@ function authorizeDocGenerator() {
   const root = DriveApp.getFolderById(CONFIG.DOC_GENERATOR.OUTPUT_ROOT_FOLDER_ID);
   result.projectRootFolderName = root.getName();
 
-  const metadata = fetchDocGeneratorSpreadsheetMetadata_(runId);
-  result.dataSpreadsheetName = metadata && metadata.properties && metadata.properties.title || "";
-  const availableSheets = {};
-  (metadata && metadata.sheets || []).forEach(sheet => {
-    const title = sheet && sheet.properties && sheet.properties.title;
-    if (title) availableSheets[title] = true;
-  });
+  if (!CONFIG.DOC_GENERATOR.USE_SHEET_READS) {
+    result.sheetReadsEnabled = false;
+    log_(runId, "INFO", "DOCGEN_AUTH_CHECK", result);
+    return result;
+  }
 
-  Object.keys(CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES || {}).forEach(tableName => {
-    const sheetName = CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES[tableName];
-    if (!availableSheets[sheetName]) {
+  try {
+    const metadata = fetchDocGeneratorSpreadsheetMetadata_(runId);
+    result.dataSpreadsheetName = metadata && metadata.properties && metadata.properties.title || "";
+    const availableSheets = {};
+    (metadata && metadata.sheets || []).forEach(sheet => {
+      const title = sheet && sheet.properties && sheet.properties.title;
+      if (title) availableSheets[title] = true;
+    });
+
+    Object.keys(CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES || {}).forEach(tableName => {
+      const sheetName = CONFIG.DOC_GENERATOR.TABLE_SHEET_NAMES[tableName];
+      if (!availableSheets[sheetName]) {
+        result.sheets[tableName] = {
+          sheetName: sheetName,
+          missing: true
+        };
+        return;
+      }
+
+      const values = fetchDocGeneratorSheetValues_(runId, sheetName);
       result.sheets[tableName] = {
         sheetName: sheetName,
-        missing: true
+        rowsRead: values.length,
+        columnsRead: values.length ? values[0].length : 0
       };
-      return;
-    }
-
-    const values = fetchDocGeneratorSheetValues_(runId, sheetName);
-    result.sheets[tableName] = {
-      sheetName: sheetName,
-      rowsRead: values.length,
-      columnsRead: values.length ? values[0].length : 0
-    };
-  });
+    });
+  } catch (e) {
+    result.sheetReadsEnabled = true;
+    result.sheetReadError = String(e && e.message || e).slice(0, 900);
+  }
 
   log_(runId, "INFO", "DOCGEN_AUTH_CHECK", result);
   return result;
