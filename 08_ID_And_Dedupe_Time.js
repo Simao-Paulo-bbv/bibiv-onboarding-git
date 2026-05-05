@@ -205,14 +205,3 @@ function safeHeaders_(headers) {
   }
   return out;
 }
-
-
-/** =========================
- * OPTIONAL: Trigger installer
- * ========================= */
-function installTimeTriggerEveryMinute() {
-  ScriptApp.newTrigger("runSyncAndProcess")
-    .timeBased()
-    .everyMinutes(1)
-    .create();
-}

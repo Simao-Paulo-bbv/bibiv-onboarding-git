@@ -152,7 +152,7 @@ function importFromSource_(runId, mapping, source, dest, startedAt) {
         v = "";
       }
       // Source can send placeholder phone "(null) null-null" - keep it as blank.
-      if (destHeader === "numer telefonu osoby kontaktowej" && typeof v === "string") {
+      if ((destHeader === "numer telefonu osoby kontaktowej" || destHeader === "numer telefonu przedstawiciela handlowego") && typeof v === "string") {
         const phoneRaw = String(v || "").trim().toLowerCase();
         if (phoneRaw === "(null) null-null") {
           v = "";

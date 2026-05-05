@@ -121,6 +121,8 @@
   "current_working_notes": [
     "Agreement document generation and sending has been verified working after moving heavy file/path expressions out of the JOB - create job items webhook.",
     "Agreement PDF generation has moved from native AppSheet Create a new file tasks to standalone Apps Script BIBIV_Onboarding_DocsCreator in apps-script-docs-creator/. AppSheet calls generateAgreementFilesFromAppSheet to enqueue a job; processNextQueuedDocGenerationJob runs from a 1-minute trigger and generates one queued Job_ID at a time so Google Docs headers, footers, margins, and page numbers survive PDF export.",
+    "Main sync now maps email, name, PESEL, and phone for the sales representative from SOURCE to DEST/AppSheet. CONFIG.BACKFILL_EXISTING_ENABLED controls historical blank-field backfill and is currently ON.",
+    "Persistent REGON hard failures marked with MF_REGON_BLOCK are moved to Status = need verification so the row waits for manual review instead of being retried forever.",
     "Generation_Job_Items uses Initial value for Job_Item_ID, Job_ID, Item_Status/Created_At and App formula for Onboarding_ID, NIP_Control, template-derived fields, File_Name, and File.",
     "The old full webhook body with inline File/File_Name CONCATENATE expressions should be treated as superseded because it can trigger AppSheet quote parsing errors."
   ],
@@ -128,7 +130,6 @@
     "Full Trigger: Signed Docs Ready condition and target status value.",
     "Generate Applications bot branches and task settings.",
     "Whether legacy actions Prepare applications/agreements and Add templates files are still referenced.",
-    "Duplicate installTimeTriggerEveryMinute function definitions.",
     "Duplicate JOBITEM mark action variants."
   ]
 }

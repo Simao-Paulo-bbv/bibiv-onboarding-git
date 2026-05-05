@@ -18,12 +18,13 @@ const CONFIG = {
   MAX_ROWS_PER_RUN: 20,
   MAX_RUNTIME_MS: 45000,
   LOCK_TIMEOUT_MS: 20000,
+  RESET_RUN_SYNC_TRIGGER_ON_NEXT_RUN: true,
 
   MAX_APPSHEET_LOG_BODY_CHARS: 8000,
   PENDING_SCAN_LAST_N: 5000, // for huge sheets: scan only last N rows for pending processing
 
   // Existing-row backfill (missing fields only; does NOT touch Status / AppSheet actions)
-  BACKFILL_EXISTING_ENABLED: false, // OFF after one-off backfill
+  BACKFILL_EXISTING_ENABLED: true, // ON now to fill historical missing representative fields
   BACKFILL_EXISTING_MAX_ROWS_PER_RUN: 20,
   BACKFILL_EXISTING_SCAN_LAST_N: 5000,
   BACKFILL_EXISTING_USE_IBAN_API: true,
@@ -114,6 +115,7 @@ const CONFIG = {
   NIP_AS_NUMBER: false,
 
   STATUS_TO_SEND: "Init",
+  STATUS_NEED_VERIFICATION: "need verification",
   WRITE_STATUS_JUST_IN_TIME: true,
 
   MAX_PAYLOAD_PREVIEW_CHARS: 2000,
@@ -159,6 +161,9 @@ const HEADER_ALIASES = {
   "numer rachunku firmowego iban": "numer rachunku bankowego",
   "email służbowy do kontaktu": "email osoby kontaktowej",
   "numer dowodu osobistego beneficjenta": "numer dowodu beneficjenta",
+  "e-mail przedstawiciela handlowego": "email przedstawiciela handlowego",
+  "email przedstawiciela": "email przedstawiciela handlowego",
+  "e-mail przedstawiciela": "email przedstawiciela handlowego",
 };
 
 /** =========================
@@ -227,6 +232,7 @@ const APPSHEET_SCHEMA = [
   "Bank address",
   "Bank city",
   // NEW: sales representative fields from source (append-only to avoid shifting)
+  "email przedstawiciela handlowego",
   "imię i nazwisko przedstawiciela handlowego",
   "pesel przedstawiciela handlowego",
   "numer telefonu przedstawiciela handlowego",
@@ -257,6 +263,7 @@ const SYSTEM_DEFAULTS = {
   "Bank name": "",
   "Bank address": "",
   "Bank city": "",
+  "email przedstawiciela handlowego": "",
   "imię i nazwisko przedstawiciela handlowego": "",
   "pesel przedstawiciela handlowego": "",
   "numer telefonu przedstawiciela handlowego": "",
@@ -331,6 +338,7 @@ const APPSHEET_MAIN_ALLOWED_COLS = [
   "Bank address",
   "Bank city",
   // NEW sales representative fields (appended at the end)
+  "email przedstawiciela handlowego",
   "imię i nazwisko przedstawiciela handlowego",
   "pesel przedstawiciela handlowego",
   "numer telefonu przedstawiciela handlowego",

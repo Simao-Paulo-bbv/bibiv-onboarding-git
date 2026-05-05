@@ -21,6 +21,7 @@ Google Sheet "DEST" (canonical schema, stable column order)
       │   ├─ MF enrichment (REGON → VAT → IBAN) via gov.api.hypnotype.com
       │   │   and Cloud Run MF relay (ID-token auth)
       │   ├─ Bank_Accounts child sync (11_Bank_Accounts.js)
+      │   ├─ optional historical backfill for blank bank/sales-rep fields
       │   ├─ People_List refs (Contact / Manager / Beneficial Owner) with
       │   │   deterministic PersonID = "P_" + base64(SHA256(OnboardingID|Role|fullName))
       │   └─ AppSheet Add / Edit (07_Payload_And_Normalization.js + 05_AppSheet_API.js)
@@ -83,7 +84,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 | `09_Logging.js` | Logger + sync_status marker append |
 | `10_Sheet_And_Header_Utils.js` | Header repair (non-destructive — never truncates) |
 | `11_Bank_Accounts.js` | Child table sync to AppSheet `Bank_Accounts` |
-| `12_Backfill_Existing.js` | One-shot backfill for legacy rows; toggle off after use |
+| `12_Backfill_Existing.js` | Toggle-controlled backfill for legacy rows; fills blank fields only |
 | `apps-script-docs-creator/` | Standalone Apps Script `BIBIV_Onboarding_DocsCreator` for Agreement PDFs |
 | `mf-relay/` | Cloud Run service (ID-token auth) for MF VAT bypass |
 
@@ -103,6 +104,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 5. **Folder paths in AppSheet** — `Folder_Path` is a constant root (`Files_Application_` or `Files_Agreements_`); NIP is a separate subfolder; formulas always use explicit `"/"` separators.
 6. **No `LOOKUP(USEREMAIL(), …)` for record context** — abandoned; caused cross-user record mixing. Always carry context via `Generation_Jobs[Onboarding_ID]` → `Generation_Job_Items` → `Agreements_Files`.
 7. **Agreement generator is queue-backed** — AppSheet must enqueue via `generateAgreementFilesFromAppSheet`; the time-trigger worker processes one Job_ID at a time so one onboarding finishes and sends mail before the next.
+8. **REGON hard failures require humans** — persistent `MF_REGON_BLOCK` rows are moved to `Status = "need verification"` and are not retried forever.
 
 ## Key reference docs in this folder
 

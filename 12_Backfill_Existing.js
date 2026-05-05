@@ -71,13 +71,14 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
     bankName: mapping.dstIndex["Bank name"],
     bankAddress: mapping.dstIndex["Bank address"],
     bankCity: mapping.dstIndex["Bank city"],
+    repEmail: mapping.dstIndex["email przedstawiciela handlowego"],
     repName: mapping.dstIndex["imię i nazwisko przedstawiciela handlowego"],
     repPesel: mapping.dstIndex["pesel przedstawiciela handlowego"],
     repPhone: mapping.dstIndex["numer telefonu przedstawiciela handlowego"]
   };
 
   const missingDestCols = [];
-  ["bankName", "bankAddress", "bankCity", "repName", "repPesel", "repPhone"].forEach((k) => {
+  ["bankName", "bankAddress", "bankCity", "repEmail", "repName", "repPesel", "repPhone"].forEach((k) => {
     if (idx[k] == null) missingDestCols.push(k);
   });
   if (missingDestCols.length) {
@@ -92,7 +93,7 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
   const colsToFetch = uniqueSortedIndices_([
     idx.nip, idx.submitted, idx.bankAccount,
     idx.bankName, idx.bankAddress, idx.bankCity,
-    idx.repName, idx.repPesel, idx.repPhone
+    idx.repEmail, idx.repName, idx.repPesel, idx.repPhone
   ]);
   if (!colsToFetch.length) return out;
 
@@ -111,6 +112,7 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
 
     const nip = String(v(idx.nip) || "").trim();
     const submitted = v(idx.submitted);
+    const repEmail = v(idx.repEmail);
     const repName = v(idx.repName);
     const repPesel = v(idx.repPesel);
     const repPhone = v(idx.repPhone);
@@ -120,7 +122,7 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
     const accountRaw = v(idx.bankAccount);
     const accountNorm = normalizeBackfillBankAccount_(accountRaw);
 
-    const needsRep = isBlankForBackfill_(repName) || isBlankForBackfill_(repPesel) || isBlankForBackfill_(repPhone);
+    const needsRep = isBlankForBackfill_(repEmail) || isBlankForBackfill_(repName) || isBlankForBackfill_(repPesel) || isBlankForBackfill_(repPhone);
     const needsBank = !!accountNorm && (isBlankForBackfill_(bankName) || isBlankForBackfill_(bankAddress) || isBlankForBackfill_(bankCity));
     if (!needsRep && !needsBank) continue;
 
@@ -134,6 +136,7 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
       needsRep: needsRep,
       needsBank: needsBank,
       current: {
+        repEmail: repEmail,
         repName: repName,
         repPesel: repPesel,
         repPhone: repPhone,
@@ -166,10 +169,12 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
         (c.key ? (repMaps.byKey[c.key] || null) : null) ||
         (c.nip ? (repMaps.byNip[c.nip] || null) : null) ||
         {};
+      const repEmail = sanitizeBackfillText_("repEmail", rep.repEmail);
       const repName = sanitizeBackfillText_("repName", rep.repName);
       const repPesel = sanitizeBackfillText_("repPesel", rep.repPesel);
       const repPhone = sanitizeBackfillText_("repPhone", rep.repPhone);
 
+      if (isBlankForBackfill_(c.current.repEmail) && repEmail) updates.push({ col: idx.repEmail + 1, value: repEmail });
       if (isBlankForBackfill_(c.current.repName) && repName) updates.push({ col: idx.repName + 1, value: repName });
       if (isBlankForBackfill_(c.current.repPesel) && repPesel) updates.push({ col: idx.repPesel + 1, value: repPesel });
       if (isBlankForBackfill_(c.current.repPhone) && repPhone) updates.push({ col: idx.repPhone + 1, value: repPhone });
@@ -225,14 +230,16 @@ function buildSourceRepMapForBackfill_(runId, mapping, source, candidates, start
 
   const srcNipIdx = mapping.sourceKey.nipIdx;
   const srcDateIdx = mapping.sourceKey.dateIdx;
+  const srcRepEmailIdx = mapping.srcIndex[normalizeKey_("email przedstawiciela handlowego")];
   const srcRepNameIdx = mapping.srcIndex[normalizeKey_("imię i nazwisko przedstawiciela handlowego")];
   const srcRepPeselIdx = mapping.srcIndex[normalizeKey_("pesel przedstawiciela handlowego")];
   const srcRepPhoneIdx = mapping.srcIndex[normalizeKey_("numer telefonu przedstawiciela handlowego")];
 
-  if (srcNipIdx == null || srcDateIdx == null || srcRepNameIdx == null || srcRepPeselIdx == null || srcRepPhoneIdx == null) {
+  if (srcNipIdx == null || srcDateIdx == null || srcRepEmailIdx == null || srcRepNameIdx == null || srcRepPeselIdx == null || srcRepPhoneIdx == null) {
     log_(runId, "WARN", "BACKFILL_SOURCE_COLS_MISSING", {
       srcNipIdx: srcNipIdx,
       srcDateIdx: srcDateIdx,
+      srcRepEmailIdx: srcRepEmailIdx,
       srcRepNameIdx: srcRepNameIdx,
       srcRepPeselIdx: srcRepPeselIdx,
       srcRepPhoneIdx: srcRepPhoneIdx
@@ -243,7 +250,7 @@ function buildSourceRepMapForBackfill_(runId, mapping, source, candidates, start
   const sourceLastRow = source.getLastRow();
   if (sourceLastRow < 2) return out;
 
-  const srcCols = uniqueSortedIndices_([srcNipIdx, srcDateIdx, srcRepNameIdx, srcRepPeselIdx, srcRepPhoneIdx]);
+  const srcCols = uniqueSortedIndices_([srcNipIdx, srcDateIdx, srcRepEmailIdx, srcRepNameIdx, srcRepPeselIdx, srcRepPhoneIdx]);
   const minIdx = srcCols[0] + 1;
   const maxIdx = srcCols[srcCols.length - 1] + 1;
   const width = maxIdx - minIdx + 1;
@@ -258,13 +265,15 @@ function buildSourceRepMapForBackfill_(runId, mapping, source, candidates, start
     if (!nip) continue;
     const sub = v(srcDateIdx);
     const key = makeDedupeKey_(nip, sub);
+    const repEmail = sanitizeBackfillText_("repEmail", v(srcRepEmailIdx));
     const repName = sanitizeBackfillText_("repName", v(srcRepNameIdx));
     const repPesel = sanitizeBackfillText_("repPesel", v(srcRepPeselIdx));
     const repPhone = sanitizeBackfillText_("repPhone", v(srcRepPhoneIdx));
 
     if (keysToFind[key]) {
-      if (!out.byKey[key]) out.byKey[key] = { repName: "", repPesel: "", repPhone: "" };
+      if (!out.byKey[key]) out.byKey[key] = { repEmail: "", repName: "", repPesel: "", repPhone: "" };
       const recByKey = out.byKey[key];
+      if (!recByKey.repEmail && repEmail) recByKey.repEmail = repEmail;
       if (!recByKey.repName && repName) recByKey.repName = repName;
       if (!recByKey.repPesel && repPesel) recByKey.repPesel = repPesel;
       if (!recByKey.repPhone && repPhone) recByKey.repPhone = repPhone;
@@ -272,8 +281,9 @@ function buildSourceRepMapForBackfill_(runId, mapping, source, candidates, start
 
     const nipKey = String(nip || "").trim();
     if (nipsToFind[nipKey]) {
-      if (!out.byNip[nipKey]) out.byNip[nipKey] = { repName: "", repPesel: "", repPhone: "" };
+      if (!out.byNip[nipKey]) out.byNip[nipKey] = { repEmail: "", repName: "", repPesel: "", repPhone: "" };
       const recByNip = out.byNip[nipKey];
+      if (!recByNip.repEmail && repEmail) recByNip.repEmail = repEmail;
       if (!recByNip.repName && repName) recByNip.repName = repName;
       if (!recByNip.repPesel && repPesel) recByNip.repPesel = repPesel;
       if (!recByNip.repPhone && repPhone) recByNip.repPhone = repPhone;

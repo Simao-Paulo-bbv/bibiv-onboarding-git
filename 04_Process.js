@@ -171,6 +171,7 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
     // do not call further APIs and do not send to AppSheet until row is corrected.
     const hasMfRegonBlockNow = currentSync.indexOf("MF_REGON_BLOCK") >= 0 || String(mfCallResult.reason || "").indexOf("REGON_") === 0;
     if (hasMfRegonBlockNow) {
+      markRowAsNeedVerification_(runId, dest, rowNum, statusIdx, row, "REGON_BLOCK");
       log_(runId, "WARN", "ROW_BLOCKED_REGON", {
         rowNum,
         nip: nipRaw,
@@ -635,6 +636,25 @@ function evaluateMfReadinessForAdd_(payload) {
   }
 
   return { ready: missing.length === 0, missing: missing };
+}
+
+function markRowAsNeedVerification_(runId, dest, rowNum, statusIdx, row, reason) {
+  if (statusIdx == null || !CONFIG || !CONFIG.STATUS_NEED_VERIFICATION) return;
+  const currentStatus = String(row && row[statusIdx] != null ? row[statusIdx] : "").trim();
+  const initStatus = String(CONFIG.STATUS_TO_SEND || "").trim();
+  const canSet =
+    currentStatus === "" ||
+    (initStatus !== "" && currentStatus === initStatus) ||
+    currentStatus.toLowerCase() === "init";
+  if (!canSet || currentStatus === CONFIG.STATUS_NEED_VERIFICATION) return;
+
+  dest.getRange(rowNum, statusIdx + 1).setValue(CONFIG.STATUS_NEED_VERIFICATION);
+  if (row) row[statusIdx] = CONFIG.STATUS_NEED_VERIFICATION;
+  log_(runId, "WARN", "ROW_MARKED_NEED_VERIFICATION", {
+    rowNum: rowNum,
+    status: CONFIG.STATUS_NEED_VERIFICATION,
+    reason: String(reason || "")
+  });
 }
 
 function isAppSheetSchemaMismatchError_(err) {

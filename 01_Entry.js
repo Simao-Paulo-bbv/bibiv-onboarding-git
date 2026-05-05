@@ -14,6 +14,7 @@ function runSyncAndProcess() {
 
   try {
     const effectiveUser = safeGetEffectiveUserEmail_();
+    ensureRunSyncTriggerResetIfRequested_(runId);
     log_(runId, "INFO", "START", {
       effectiveUser: effectiveUser || "",
       mfUseRelay: !!(CONFIG && CONFIG.MF_USE_RELAY),
@@ -226,7 +227,7 @@ if (scanRowStart !== 2) {
     const hasRegonBlock = sync.indexOf("MF_REGON_BLOCK") >= 0;
     const hasVatBlock = sync.indexOf("MF_VAT_BLOCK") >= 0;
     const hasMfRateLimit = sync.indexOf("MF_RATE_LIMIT") >= 0;
-    if (hasRegonBlock || hasVatBlock || hasMfRateLimit) continue;
+    if (hasVatBlock || hasMfRateLimit) continue;
     // braki refów
     const cref = String(getVal("CREF") || "").trim();
     const mref = String(getVal("MREF") || "").trim();
@@ -295,8 +296,36 @@ if (scanRowStart !== 2) {
  * OPTIONAL: Trigger installer
  * ========================= */
 function installTimeTriggerEveryMinute() {
+  return resetRunSyncTriggerEveryMinute();
+}
+
+function resetRunSyncTriggerEveryMinute() {
+  const handler = "runSyncAndProcess";
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction && triggers[i].getHandlerFunction() === handler) {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed++;
+    }
+  }
   ScriptApp.newTrigger("runSyncAndProcess")
     .timeBased()
     .everyMinutes(1)
     .create();
+  return { ok: true, handler: handler, removed: removed, everyMinutes: 1 };
+}
+
+function ensureRunSyncTriggerResetIfRequested_(runId) {
+  if (!CONFIG || CONFIG.RESET_RUN_SYNC_TRIGGER_ON_NEXT_RUN !== true) return;
+  const key = "RUN_SYNC_TRIGGER_RESET_TO_1_MIN_DONE";
+  const props = PropertiesService.getScriptProperties();
+  if (String(props.getProperty(key) || "") === "true") return;
+  try {
+    const res = resetRunSyncTriggerEveryMinute();
+    props.setProperty(key, "true");
+    log_(runId, "WARN", "RUN_SYNC_TRIGGER_RESET_TO_1_MIN", res);
+  } catch (e) {
+    log_(runId, "ERROR", "RUN_SYNC_TRIGGER_RESET_FAILED", { err: String(e).slice(0, 700) });
+  }
 }
