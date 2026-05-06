@@ -41,38 +41,6 @@ function processNextQueuedDocGenerationJob() {
   return processQueuedDocGenerationJobs_({});
 }
 
-function generateAgreementFilesFromAppSheetInlineStart(onboardingId, jobId, agreementFileId) {
-  const runId = makeRunId_();
-  const queued = generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId);
-  if (String(agreementFileId || "").trim()) {
-    log_(runId, "INFO", "DOCGEN_INLINE_START_SKIPPED_FOR_FILE_EVENT", {
-      onboardingId: String(onboardingId || "").trim(),
-      jobId: String(jobId || "").trim(),
-      agreementFileId: String(agreementFileId || "").trim()
-    });
-    return Object.assign({}, queued, {
-      inlineStarted: false,
-      inlineSkipped: "file-event"
-    });
-  }
-  try {
-    const inlineResult = processQueuedDocGenerationJobs_({
-      maxFilesPerRun: Number(CONFIG.DOC_GENERATOR.INLINE_START_MAX_FILES_PER_RUN || 2),
-      maxWorkerRuntimeMs: Number(CONFIG.DOC_GENERATOR.INLINE_START_MAX_WORKER_RUNTIME_MS || 70000),
-      minRemainingMs: Number(CONFIG.DOC_GENERATOR.INLINE_START_MIN_REMAINING_MS || 15000)
-    });
-    return Object.assign({}, queued, { inlineStarted: true, inlineResult: inlineResult });
-  } catch (e) {
-    log_(runId, "WARN", "DOCGEN_INLINE_START_FAILED_CONTINUING_AS_QUEUED", {
-      error: String(e && e.message || e).slice(0, 900)
-    });
-    return Object.assign({}, queued, {
-      inlineStarted: false,
-      inlineError: String(e && e.message || e).slice(0, 900)
-    });
-  }
-}
-
 function processQueuedDocGenerationJobs_(options) {
   options = options || {};
   const runId = makeRunId_();
