@@ -29,10 +29,12 @@ function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId
     agreementFileId: String(agreementFileId || "").trim()
   };
 
-  enqueueDocGenerationJob_(runId, args);
-  ensureDocGenerationQueueTrigger({ refresh: true });
-  log_(runId, "INFO", "DOCGEN_ENQUEUED", args);
-  return { ok: true, queued: true, jobId: args.jobId };
+  const enqueueResult = enqueueDocGenerationJob_(runId, args);
+  ensureDocGenerationQueueTrigger({ refresh: Boolean(enqueueResult && enqueueResult.added) });
+  log_(runId, "INFO", "DOCGEN_ENQUEUED", Object.assign({}, args, {
+    added: Boolean(enqueueResult && enqueueResult.added)
+  }));
+  return { ok: true, queued: true, added: Boolean(enqueueResult && enqueueResult.added), jobId: args.jobId };
 }
 
 function processNextQueuedDocGenerationJob() {
@@ -327,6 +329,7 @@ function enqueueDocGenerationJob_(runId, args, options) {
     if (!key) throw new Error("Cannot enqueue doc generation without jobId/onboardingId/agreementFileId.");
 
     const exists = queue.some(item => (item.jobId || item.agreementFileId || item.onboardingId) === key);
+    let added = false;
     if (!exists) {
       const item = {
         onboardingId: args.onboardingId,
@@ -341,8 +344,10 @@ function enqueueDocGenerationJob_(runId, args, options) {
         queue.push(item);
       }
       writeDocGenerationQueue_(props, queue);
+      added = true;
     }
-    log_(runId, "INFO", "DOCGEN_QUEUE_STATE", { size: queue.length });
+    log_(runId, "INFO", "DOCGEN_QUEUE_STATE", { size: queue.length, added: added });
+    return { added: added, size: queue.length };
   } finally {
     lock.releaseLock();
   }
