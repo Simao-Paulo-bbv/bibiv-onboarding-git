@@ -1563,7 +1563,7 @@ Process:
 
 Role: once all items for a job have produced file request rows, mark job done with file requests and continue queue by starting the next job.
 
-### 4.6 `Generate Agreements`
+### 4.6 Agreement PDF generation via `Kick Apps Script generator`
 
 Event source/table:
 
@@ -1571,51 +1571,52 @@ Event source/table:
 Agreements_Files
 ```
 
-Event condition shown:
+Current stable event:
 
 ```appsheet
-AND([File_status] = "Set Up", [Category] = "Agreement")
+AND(
+  [Category] = "Agreement",
+  [File_status] = "Set Up",
+  ISNOTBLANK([Job_ID]),
+  ISNOTBLANK([Onboarding_ID])
+)
 ```
 
-Process graph from screenshot:
+Bot/process:
 
 ```text
-Check status: Set up And Agreements
-  -> If: Appx_10
-      YES -> Create a document (appx10)
-      NO  -> If: Appx_10.3
-              YES -> Create a document (appx10.3)
-              NO  -> If: Appx_10.2
-                      YES -> Create a document (appx10.2)
-                      NO  -> If: Appx_10.1
-                              YES -> Create a document (appx10.1)
-                              NO  -> GDPR
-                                      YES -> Create a document (GDPR)
-  -> Change File Status (Ready)
+Bot:   Kick Apps Script generator
+Event: Added Set Up agreement
+Step:  Call a script
+Script: BIBIV_Onboarding_DocsCreator
+Function: generateAgreementFilesFromAppSheet
+Args:
+  onboardingId    [Onboarding_ID]
+  jobId           [Job_ID]
+  agreementFileId [ID]
 ```
 
-Observed document task settings:
+Role: enqueue the agreement `Job_ID` in the standalone Apps Script. AppSheet may call this once per created agreement file row, but Apps Script deduplicates by `Job_ID`: the first call logs `added:true`; later rows for the same job log `added:false`.
 
-- table: `Agreements_Files`,
-- content type: PDF,
-- template provider: Google Docs templates from `Doc_Templates.Template_ID`/specific template IDs,
-- folder path expression:
+The actual PDF work is done by the time-driven worker:
 
-```appsheet
-CONCATENATE("/", [Folder_Path])
+```text
+processNextQueuedDocGenerationJob
 ```
 
-- file name prefix:
+Worker behavior:
 
-```appsheet
-[File_Name]
-```
+- reads all `Agreements_Files` rows for the queued `Job_ID`,
+- copies Google Docs templates,
+- replaces placeholders,
+- exports the first Docs tab to PDF,
+- writes PDFs to the existing `Agreements_Files[File]` path,
+- batch-marks generated rows `Ready`,
+- marks matching `Generation_Job_Items` as `Agreement file created`,
+- creates missing `Signed_Documents` upload placeholders,
+- updates the main onboarding row when all agreement files are ready.
 
-- disable timestamp: enabled in screenshot,
-- page orientation: Portrait,
-- page size: A4.
-
-Role: generates agreement PDF files based on `Agreements_Files` rows and marks file ready.
+Do not restore the old native `Generate Agreements` document-task process for Agreement PDFs, and do not call inline generator functions from AppSheet. Inline generation was tested and caused canceled automation executions / partial row creation.
 
 ### 4.7 `Generate Applications`
 
@@ -1786,8 +1787,8 @@ Generation_Jobs queue path same as application flow
   -> JOB - start queued job
   -> JOB - create job items for Doc_Templates Category = Agreement
   -> JOBITEM creates Agreements_Files rows Category Agreement, File_status Set Up
-  -> Generate Agreements creates PDFs
-  -> Change File status (Ready)
+  -> Kick Apps Script generator enqueues Job_ID via generateAgreementFilesFromAppSheet
+  -> processNextQueuedDocGenerationJob creates PDFs and batch-marks Ready
   -> Trigger: Agreements Done marks main Status = Agreements Generated
 
 BIBIV_onboarding_APP when agreements generated
@@ -2073,7 +2074,9 @@ Send for approval -> Generation_Jobs(Application/Queued)
 Agreement docs:
 Send Documents to client -> Generation_Jobs(Agreement/Queued)
 -> same queue path
--> Agreements_Files Agreement Set Up -> Generate Agreements -> Ready
+-> Agreements_Files Agreement Set Up
+-> Kick Apps Script generator enqueues Job_ID
+-> processNextQueuedDocGenerationJob creates PDFs -> Ready
 -> Trigger: Agreements Done -> Status Agreements Generated
 -> Send agreements bot emails ready Agreement files + static attachments
 -> Status Waiting for client signature

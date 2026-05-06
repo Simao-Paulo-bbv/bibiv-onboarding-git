@@ -49,10 +49,12 @@ Agreements_Files (the file-factory input table)
       │       → produces Application PDF/XLSX in Drive
       │       → sets File_status = "Ready"
       │  Agreement docs:
-      │       Bot "Generate Agreements - Apps Script" fires once all job items
-      │       are "File request created" and calls generateAgreementFilesFromAppSheet()
+      │       Bot "Kick Apps Script generator" fires on each new Agreement
+      │       row with File_status="Set Up" and calls
+      │       generateAgreementFilesFromAppSheet([Onboarding_ID], [Job_ID], [ID])
       │       in standalone script BIBIV_Onboarding_DocsCreator.
-      │       That call only enqueues the Job_ID. A 1-minute time trigger worker
+      │       That call only enqueues the Job_ID; duplicate file-row events
+      │       for the same Job_ID are ignored by the queue. A time trigger worker
       │       processNextQueuedDocGenerationJob processes one queued job at a time:
       │       copies Google Docs templates from Doc_Templates[Template_ID],
       │       fills placeholders, exports the first Docs tab to PDF, writes to Drive,
@@ -101,7 +103,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 4. **Deterministic PersonID** — `"P_" + base64(SHA256(onboardingId|role|fullName)).slice(0,22)`. Same person always gets the same key across re-imports.
 5. **Folder paths in AppSheet** — `Folder_Path` is a constant root (`Files_Application_` or `Files_Agreements_`); NIP is a separate subfolder; formulas always use explicit `"/"` separators.
 6. **No `LOOKUP(USEREMAIL(), …)` for record context** — abandoned; caused cross-user record mixing. Always carry context via `Generation_Jobs[Onboarding_ID]` → `Generation_Job_Items` → `Agreements_Files`.
-7. **Agreement generator is queue-backed** — AppSheet must enqueue via `generateAgreementFilesFromAppSheet`; the time-trigger worker processes one Job_ID at a time so one onboarding finishes and sends mail before the next.
+7. **Agreement generator is queue-backed** — AppSheet must enqueue via `generateAgreementFilesFromAppSheet` from the `Kick Apps Script generator` bot on `Agreements_Files` Adds. The queue deduplicates by `Job_ID`, and the time-trigger worker processes one Job_ID at a time so one onboarding finishes and sends mail before the next.
 8. **REGON hard failures require humans** — persistent `MF_REGON_BLOCK` rows are moved to `Status = "need verification"` and are not retried forever.
 9. **`name_api` refresh is isolated** — `runRefreshNameApiOnly()` updates only `name_api` from REGON/GOV. It must not run import/AppSheet/People/bank logic.
 10. **GOV enrichment status gate** — regular GOV/MF enrichment runs only while `Status = "Init"`; later AppSheet workflow/status changes must not re-run GOV or overwrite `name_api`.

@@ -65,7 +65,7 @@ One row per template that needs to be generated for a job.
 > The `"/"` separators are **explicit and required**. Earlier versions concatenated `Folder_Path` directly with NIP and produced paths like `Files_Application_5531549891/...` (missing `/`) → broken folder routing. Never glue `Folder_Path` and NIP without `"/"`.
 
 ### `Agreements_Files`
-The actual file-factory input table. Existing `Generate Applications` / `Generate Agreements` bots watch this table and produce physical files.
+The actual file-factory input table. `Generate Applications` still watches this table and produces physical application files. Agreement rows are handled by the standalone Apps Script generator through the `Kick Apps Script generator` bot.
 
 Key columns: `File_status` (`Set Up` → optional `Generating` → optional `Generated` → `Ready`), `File`, `File_Name`, `Job_ID`, `Job_Item_ID`, `Template_ID_Reference`, plus the file artifacts.
 
@@ -130,10 +130,31 @@ Key columns: `File_status` (`Set Up` → optional `Generating` → optional `Gen
      - `Template_ID_Reference` = `[_THISROW].[Template_ID]`
   2. Set `Item_Status = "File request created"`
 
-### 4. `Generate Applications` / `Generate Agreements` (existing — keep as-is)
-- **Event**: `Agreements_Files` — Adds only, condition by Category
-- **Process**: existing file-factory logic; on success sets `File_status = "Ready"` and updates the parent `Generation_Job_Items` row (`Item_Status = "Agreement file created"`)
-- Agreement generation via Apps Script may write intermediate `Generating`/`Generated` statuses. AppSheet completion/email bots must continue to key only on `Ready`.
+### 4. File generation
+
+#### `Generate Applications`
+- **Event**: `Agreements_Files` — Adds only, condition `Category = "Application"`
+- **Process**: existing application file-factory logic; on success sets `File_status = "Ready"` and updates the parent `Generation_Job_Items` row.
+
+#### `Kick Apps Script generator`
+- **Event**: `Agreements_Files` — Adds only
+- **Event name**: `Added Set Up agreement`
+- **Condition**:
+  ```
+  AND(
+    [Category] = "Agreement",
+    [File_status] = "Set Up",
+    ISNOTBLANK([Job_ID]),
+    ISNOTBLANK([Onboarding_ID])
+  )
+  ```
+- **Process**: call standalone script `BIBIV_Onboarding_DocsCreator`
+  ```
+  generateAgreementFilesFromAppSheet([Onboarding_ID], [Job_ID], [ID])
+  ```
+- The script call only enqueues. The time-driven worker `processNextQueuedDocGenerationJob` does the real Google Docs copy / placeholder replacement / PDF export work.
+- AppSheet may fire this bot once per agreement file row. Apps Script deduplicates by `Job_ID`: the first call logs `added:true`; later file-row calls for the same job log `added:false` and do not create duplicate work.
+- Agreement generation may write intermediate `Generating` statuses. AppSheet completion/email bots must continue to key only on `Ready`.
 
 ### 5. `JOB - finish and continue queue`
 - **Event**: `Generation_Job_Items` — Updates only
@@ -176,6 +197,9 @@ Add row to Generation_Jobs:
 These are legacy / superseded — leaving them on can re-introduce the old bugs (empty NIP, mixed records, broken paths):
 
 - ❌ `Add templates files (multiple)` — the old direct-from-Doc_Templates copy. **The single biggest source of old bugs.**
+- ❌ Native `Generate Agreements` file task for Agreement PDFs — superseded by `Kick Apps Script generator` + standalone Apps Script.
+- ❌ Old `Generate Agreements - Apps Script` variant that triggers from `Generation_Job_Items` updates after all items are file-request-created.
+- ❌ Any AppSheet call to `generateAgreementFilesFromAppSheetInlineStart` or other inline generator. Inline generation caused canceled AppSheet automation executions and partial row creation.
 - ❌ `Prepare applications`
 - ❌ `Flag creating documents`
 - ❌ `QUEUE - mark active`, `QUEUE - start one generation`, `QUEUE - dispatch next generation` — pre-Generation_Jobs queue

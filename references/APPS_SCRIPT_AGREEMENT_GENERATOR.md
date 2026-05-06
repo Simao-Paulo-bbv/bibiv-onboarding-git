@@ -49,7 +49,7 @@ jobId             = [Job_ID]
 agreementFileId   = [ID]
 ```
 
-The script uses `jobId` first. One queued job generates pending agreement files for that job. If more files remain after the safe per-run limit, the script re-enqueues the same `Job_ID` for continuation.
+The script uses `jobId` first. Queue deduplication is per `Job_ID`: the first file event for a job logs `added:true`, later file events for the same job log `added:false` and do not create duplicate work or refresh the worker trigger. One queued job generates all pending agreement files for that job. If more files remain after the safe per-run limit, the script re-enqueues the same `Job_ID` for continuation.
 
 ## Required config before production
 
@@ -90,39 +90,36 @@ The Apps Script generator writes to the relative path already stored in `Agreeme
 Files_Agreements_/5140154728/Appx_10__5140154728__04-05-2026.pdf
 ```
 
-## New AppSheet bot
+## AppSheet bot
 
-Disable the old bot:
+The stable production setup is one enqueue call per newly created agreement file row. AppSheet may call the script 7 times for one agreement job, but Apps Script deduplicates those calls by `Job_ID`; only the first call adds the job to the queue.
+
+Disable old/unsafe agreement generators:
 
 ```text
 Generate Agreements
+Generate Agreements - Apps Script   (old Generation_Job_Items update variant, if present)
+generateAgreementFilesFromAppSheetInlineStart callers
 ```
 
 Create / keep this bot:
 
 ```text
-Generate Agreements - Apps Script
+Bot:   Kick Apps Script generator
+Event: Added Set Up agreement
 ```
 
 Event:
 
 ```text
-Table: Generation_Job_Items
-Data change: Updates only
+Table: Agreements_Files
+Data change: Adds only
 Condition:
 AND(
-  [Item_Status] = "File request created",
-  ISBLANK(
-    ANY(
-      SELECT(
-        Generation_Job_Items[Job_Item_ID],
-        AND(
-          [Job_ID] = [_THISROW].[Job_ID],
-          [Item_Status] <> "File request created"
-        )
-      )
-    )
-  )
+  [Category] = "Agreement",
+  [File_status] = "Set Up",
+  ISNOTBLANK([Job_ID]),
+  ISNOTBLANK([Onboarding_ID])
 )
 ```
 
@@ -151,6 +148,8 @@ Return value can be ignored for now; the script updates AppSheet rows directly t
 
 `Run asynchronously?` can be ON or OFF because the AppSheet call only enqueues. The worker runs independently.
 
+Do not call an inline-start function from AppSheet. Inline generation from the AppSheet automation context was tested and caused canceled tasks / partial file-row creation. Keep AppSheet's call short: enqueue only, then let `processNextQueuedDocGenerationJob` run from the time-driven trigger.
+
 ## What the script does
 
 For a queued job:
@@ -171,7 +170,7 @@ For a queued job:
    - replaces simple placeholders,
    - exports the copy as PDF,
    - writes the PDF to `Agreements_Files[File]` path,
-   - marks the file row as `Generated`.
+   - logs the file as generated. In the current production config, the per-file `Generated` AppSheet write is deferred to the final `Ready` batch.
 
 3. Batch marks the processed chunk as `Ready` and updates matching `Generation_Job_Items`.
 
@@ -205,7 +204,14 @@ Ready       -> final state used by existing AppSheet completion/email bots
 
 `Ready` remains the only generated-document status that should drive AppSheet completion and sending bots. Do not make bots react to `Generating` or `Generated`.
 
-Before enabling visible progress in AppSheet, add `Generating` and `Generated` to the `Agreements_Files[File_status]` enum. Progress status updates are non-blocking in the script, so generation continues even if AppSheet rejects those intermediate enum values.
+Current production mode:
+
+```javascript
+CONFIG.DOC_GENERATOR.FILE_PROGRESS_STATUSES_ENABLED = true;
+CONFIG.DOC_GENERATOR.FILE_PROGRESS_UPDATE_MODE = "generating_only";
+```
+
+That means each file may be marked `Generating`, but successful files are batch-marked directly to `Ready` at the end. `Generated` can stay in the enum for compatibility, but the script does not need to write it per file in this mode. Progress status updates are non-blocking in the script, so generation continues even if AppSheet rejects an intermediate enum value.
 
 ## Signed upload placeholders
 
@@ -288,10 +294,12 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 Current optimizations:
 
 - Read-heavy lookups for `Agreements_Files`, `BIBIV_onboarding_APP`, and `Doc_Templates` normally use AppSheet API. A disabled optional fast path (`CONFIG.DOC_GENERATOR.USE_SHEET_READS=false`) can read the underlying Google Sheet through the Google Sheets API, but it requires Sheets API to be enabled in the script's Cloud project. Writes always go through AppSheet API so data-change bots and AppSheet state remain authoritative.
+- AppSheet file-row events enqueue by `Job_ID`, not by individual PDF. Duplicate events for the same `Job_ID` log `added:false` and do not reset the one-shot trigger.
 - `Doc_Templates` rows and the main onboarding row are cached during one worker execution so continuation chunks do not refetch stable metadata.
 - Each chunk processes at most `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN` files, currently `10`. The worker immediately continues with the same `Job_ID` while its runtime budget allows, and checks the time budget before starting another file so it can yield before timeout.
 - Rows stuck in `Generating` after a timeout are included in the next retry pass.
-- `Agreements_Files` and `Generation_Job_Items` status updates are batched after PDFs are created.
+- Successful files are batch-marked `Ready` after PDFs are created; the per-file `Generated` write is skipped in `generating_only` progress mode.
+- `Agreements_Files` and `Generation_Job_Items` final status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
 - Placeholder replacement avoids scanning the document for fields that are not present in the template.
 - Timing logs named `DOCGEN_TIMING_*` identify whether slow runs are spending time in Drive copy, Docs open/save, placeholder replacement, PDF export, or file creation.
@@ -299,4 +307,6 @@ Current optimizations:
 - PDF export targets the first Google Docs tab by URL (`export?format=pdf&tab=...`) to avoid the Docs Tabs cover page.
 - Jobs are serialized through a script-property queue. Continuation for the active onboarding is prioritized ahead of later queued jobs so one NIP/Onboarding_ID can finish and send mail before the next starts.
 
-Remaining bottleneck: each PDF still requires a Google Docs template copy, text replacement, save, and PDF export. That is the slowest part and cannot be made instant without moving to pre-rendered/static PDFs or a lower-fidelity HTML/PDF renderer.
+Observed production behavior on 2026-05-06: one 7-file agreement job usually takes about 2.5-4 minutes once the worker starts. Multiple NIPs queue correctly and are processed sequentially. The main latency outside the code is Apps Script's time-driven trigger startup, which can take roughly 1-2 minutes after the first enqueue.
+
+Remaining bottleneck: each PDF still requires a Google Docs template copy, text replacement, save, and PDF export. That is the slowest part and cannot be made instant without moving to pre-rendered/static PDFs, a lower-fidelity HTML/PDF renderer, or a larger external worker architecture.

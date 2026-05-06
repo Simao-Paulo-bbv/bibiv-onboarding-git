@@ -99,9 +99,12 @@
 - Transient. Wait one cycle. If persistent, check upstream `gov.api.hypnotype.com` health.
 
 ### "Generation job stuck — items created but no files"
-- Check that `Generate Applications` / `Generate Agreements` bots are enabled and watching `Agreements_Files` Adds.
-- Verify `File_status` transitions: `"Set Up"` → `"Ready"`.
+- For Application docs, check that `Generate Applications` is enabled and watching `Agreements_Files` Adds.
+- For Agreement docs, check that `Kick Apps Script generator` is enabled on `Agreements_Files` Adds with event `Added Set Up agreement`, and that it calls `generateAgreementFilesFromAppSheet`.
+- In Apps Script logs, expect one `DOCGEN_QUEUE_STATE` with `added:true` per `Job_ID`; later rows for the same job should show `added:false`.
+- Verify `File_status` transitions: `"Set Up"` → optional `"Generating"` → `"Ready"`.
 - Verify `Folder_Path` and `File` formula output — the most common silent failure is a missing `"/"`.
+- Do not switch AppSheet back to an inline generator function; inline generation caused canceled automation executions and partial row creation.
 
 ### "Apps Script broke after I added a column in AppSheet"
 - Don't reorder DEST. Add the new column at the END of `DEST_SCHEMA` and `APPSHEET_SCHEMA`.
