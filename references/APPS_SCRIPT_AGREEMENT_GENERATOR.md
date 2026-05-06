@@ -39,7 +39,7 @@ The time-driven worker does the real generation:
 processNextQueuedDocGenerationJob()
 ```
 
-The worker is created automatically by `ensureDocGenerationQueueTrigger()`. It uses a short one-shot trigger and then drains the queue within a safe runtime budget. A `Job_ID` is still processed in chunks controlled by `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN`, but continuation chunks for the same job are put back at the front of the queue and are picked up immediately by the same worker while time remains.
+The worker is created automatically by `ensureDocGenerationQueueTrigger()`. It uses a short one-shot trigger and then drains the queue within a safe runtime budget. A `Job_ID` is still processed in chunks controlled by `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN`, but continuation chunks for the same job are put back at the front of the queue and are picked up immediately by the same worker while time remains. If the worker yields while queue items remain, it refreshes the one-shot trigger before returning so the next queued `Job_ID` is not left in `Set Up`.
 
 Recommended AppSheet parameters:
 
@@ -297,6 +297,7 @@ Current optimizations:
 - AppSheet file-row events enqueue by `Job_ID`, not by individual PDF. Duplicate events for the same `Job_ID` log `added:false` and do not reset the one-shot trigger.
 - `Doc_Templates` rows and the main onboarding row are cached during one worker execution so continuation chunks do not refetch stable metadata.
 - Each chunk processes at most `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN` files, currently `10`. The worker immediately continues with the same `Job_ID` while its runtime budget allows, and checks the time budget before starting another file so it can yield before timeout.
+- When the worker yields because the runtime budget is nearly spent, it creates a fresh one-shot trigger with `refresh:true`. This matters because the currently executing trigger is still visible to Apps Script until the function exits.
 - Rows stuck in `Generating` after a timeout are included in the next retry pass.
 - Successful files are batch-marked `Ready` after PDFs are created; the per-file `Generated` write is skipped in `generating_only` progress mode.
 - `Agreements_Files` and `Generation_Job_Items` final status updates are batched after PDFs are created.

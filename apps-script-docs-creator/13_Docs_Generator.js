@@ -72,6 +72,7 @@ function processQueuedDocGenerationJobs_(options) {
         workerResults.push(result);
       } catch (err) {
         requeueDocGenerationJobAfterFailure_(runId, args, err);
+        ensureDocGenerationQueueTrigger({ refresh: true });
         throw err;
       } finally {
         releaseDocGenerationJob_(claimKey);
@@ -88,10 +89,11 @@ function processQueuedDocGenerationJobs_(options) {
       }
 
       if (shouldYieldDocGenerationWorker_(workerStartedAt, options)) {
-        ensureDocGenerationQueueTrigger();
+        ensureDocGenerationQueueTrigger({ refresh: true });
         log_(runId, "INFO", "DOCGEN_WORKER_YIELDING", {
           processedJobs: workerResults.length,
-          elapsedMs: Date.now() - workerStartedAt
+          elapsedMs: Date.now() - workerStartedAt,
+          nextTriggerRefreshed: true
         });
         return {
           ok: workerResults.every(item => item && item.ok),
