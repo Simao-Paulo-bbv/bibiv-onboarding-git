@@ -124,6 +124,7 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
     skippedNoAccount: 0,
     skippedAlreadyComplete: 0,
     skippedIncompleteApiMeta: 0,
+    skippedEmptyApiMeta: 0,
     failed: 0,
     stoppedEarly: false
   };
@@ -198,8 +199,8 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
       out.apiCalls++;
     }
 
-    if (!isCompleteManualIbanMeta_(meta)) {
-      out.skippedIncompleteApiMeta++;
+    if (!hasAnyManualIbanMeta_(meta)) {
+      out.skippedEmptyApiMeta++;
       log_(runId, "WARN", "MANUAL_IBAN_INCOMPLETE_API_META", {
         rowNum: rowNum,
         onboardingId: onboardingId,
@@ -210,6 +211,18 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
         hasCity: !!(meta && meta.city)
       });
       continue;
+    }
+    if (!isCompleteManualIbanMeta_(meta)) {
+      out.skippedIncompleteApiMeta++;
+      log_(runId, "WARN", "MANUAL_IBAN_PARTIAL_API_META_WRITING_AVAILABLE_FIELDS", {
+        rowNum: rowNum,
+        onboardingId: onboardingId,
+        accountLast4: account.slice(-4),
+        hasBic: !!(meta && meta.bic),
+        hasBankName: !!(meta && meta.bankName),
+        hasAddress: !!(meta && meta.address),
+        hasCity: !!(meta && meta.city)
+      });
     }
 
     try {
@@ -277,11 +290,17 @@ function fetchManualIbanBankMeta_(runId, rowNum, account) {
 }
 
 function writeManualIbanMetaToSheet_(dest, idx, rowNum, meta) {
-  if (idx.legacyBic != null) dest.getRange(rowNum, idx.legacyBic + 1).setValue(meta.bic);
-  dest.getRange(rowNum, idx.bic + 1).setValue(meta.bic);
-  dest.getRange(rowNum, idx.bankName + 1).setValue(meta.bankName);
-  dest.getRange(rowNum, idx.bankAddress + 1).setValue(meta.address);
-  dest.getRange(rowNum, idx.bankCity + 1).setValue(meta.city);
+  const bic = String(meta && meta.bic || "").trim();
+  const bankName = String(meta && meta.bankName || "").trim();
+  const address = String(meta && meta.address || "").trim();
+  const city = String(meta && meta.city || "").trim();
+
+  if (bic && idx.legacyBic != null) dest.getRange(rowNum, idx.legacyBic + 1).setValue(bic);
+  if (bic) dest.getRange(rowNum, idx.bic + 1).setValue(bic);
+  if (bankName) dest.getRange(rowNum, idx.bankName + 1).setValue(bankName);
+  if (address) dest.getRange(rowNum, idx.bankAddress + 1).setValue(address);
+  if (city) dest.getRange(rowNum, idx.bankCity + 1).setValue(city);
+  SpreadsheetApp.flush();
 }
 
 function updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta) {
@@ -331,5 +350,17 @@ function isCompleteManualIbanMeta_(meta) {
     String(meta.bankName || "").trim() &&
     String(meta.address || "").trim() &&
     String(meta.city || "").trim()
+  );
+}
+
+function hasAnyManualIbanMeta_(meta) {
+  return !!(
+    meta &&
+    (
+      String(meta.bic || "").trim() ||
+      String(meta.bankName || "").trim() ||
+      String(meta.address || "").trim() ||
+      String(meta.city || "").trim()
+    )
   );
 }
