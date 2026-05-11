@@ -69,6 +69,7 @@ Critical guards:
 - IBAN skipped on hard REGON/VAT error.
 - VAT calls use GOV API only; no direct MF/relay fallback remains in the Apps Script.
 - Manual bank metadata repair lives in `14_Manual_Maintenance.js`: run `runManualRefreshIbanBankMetadata()` to refill Google Sheet rows with missing IBAN-derived fields, or `runManualRefreshAllIbanBankMetadata()` to force a fresh IBAN API check for all Google Sheet rows with an onboarding ID and bank account. It updates only `swift/bic`, `Bank name`, `Bank address`, and `Bank city`. `kod swift banku` is a source/form field and is not written by IBAN API helpers. Use `resetManualIbanRefreshCursor()` if the forced all-row refresh should start again from the top.
+- Manual People ref repair also lives in `14_Manual_Maintenance.js`: run `runManualAuditPeopleRefsFromPeopleList()` first, then `runManualRepairPeopleRefsFromPeopleList()` to copy existing `People_List[PersonID]` values back into `ContactPersonID`, `ManagerPersonID`, and `BeneficialOwnerPersonID` in the main Google Sheet. It reads `People_List`; it does not create or parse people. Matching is by `OnboardingID + Role`, with a name check against the main row.
 
 ### `07_Payload_And_Normalization.js`
 - `buildAppSheetPayloadFromDest_(dest, rowNum, action)`:

@@ -6,6 +6,7 @@
  */
 
 const MANUAL_IBAN_REFRESH_CURSOR_KEY = "MANUAL_IBAN_REFRESH_CURSOR_ROW";
+const MANUAL_PEOPLE_REFS_CURSOR_KEY = "MANUAL_PEOPLE_REFS_CURSOR_ROW";
 
 function runManualRefreshIbanBankMetadata() {
   return refreshIbanBankMetadataRows_({
@@ -33,6 +34,25 @@ function runManualAuditIbanBankMetadata() {
     forceAllRows: false,
     dryRun: true
   });
+}
+
+function runManualRepairPeopleRefsFromPeopleList() {
+  return repairPeopleRefsFromPeopleList_({
+    dryRun: false,
+    maxRows: 250
+  });
+}
+
+function runManualAuditPeopleRefsFromPeopleList() {
+  return repairPeopleRefsFromPeopleList_({
+    dryRun: true,
+    maxRows: 250
+  });
+}
+
+function resetManualPeopleRefsCursor() {
+  PropertiesService.getScriptProperties().deleteProperty(MANUAL_PEOPLE_REFS_CURSOR_KEY);
+  return { ok: true, cursorReset: true };
 }
 
 function refreshIbanBankMetadataRows_(options) {
@@ -330,4 +350,320 @@ function hasAnyManualIbanMeta_(meta) {
       String(meta.city || "").trim()
     )
   );
+}
+
+function repairPeopleRefsFromPeopleList_(options) {
+  options = options || {};
+  const runId = makeRunId_("manual-people-refs");
+  const startedAt = Date.now();
+  const maxRuntimeMs = Number(options.maxRuntimeMs || 300000);
+  const maxRows = Math.max(1, Number(options.maxRows || 250));
+  const dryRun = !!options.dryRun;
+
+  const lock = LockService.getScriptLock();
+  const gotLock = lock.tryLock(CONFIG.LOCK_TIMEOUT_MS || 20000);
+  if (!gotLock) {
+    log_(runId, "WARN", "MANUAL_PEOPLE_REFS_LOCK_NOT_ACQUIRED", {});
+    return { ok: false, reason: "LOCK_NOT_ACQUIRED" };
+  }
+
+  try {
+    const sourceSS = openSpreadsheetWithLog_(runId, CONFIG.SOURCE_SPREADSHEET_ID, "SOURCE_SPREADSHEET_ID");
+    const destSS = openSpreadsheetWithLog_(runId, CONFIG.DEST_SPREADSHEET_ID, "DEST_SPREADSHEET_ID");
+    const source = getSheet_(sourceSS, CONFIG.SOURCE_SHEET_NAME, false);
+    const dest = getSheet_(destSS, CONFIG.DEST_SHEET_NAME, false);
+    const people = getSheet_(destSS, CONFIG.APPSHEET_TABLE_PEOPLE, false);
+    if (!source || !dest) throw new Error("Source or destination sheet missing.");
+    if (!people) throw new Error("People_List sheet missing in DEST spreadsheet.");
+
+    if (CONFIG.FEATURES.ENFORCE_DEST_HEADERS) enforceDestHeaders_(runId, dest);
+    const mapping = buildMapping_(runId, source, dest);
+    validateManualPeopleRefsColumns_(mapping);
+
+    const peopleIndex = buildPeopleListRefIndex_(runId, people);
+    const result = repairPeopleRefsRowsInSheet_(runId, dest, mapping, peopleIndex, {
+      startedAt: startedAt,
+      maxRuntimeMs: maxRuntimeMs,
+      maxRows: maxRows,
+      dryRun: dryRun
+    });
+
+    log_(runId, "INFO", "MANUAL_PEOPLE_REFS_END", Object.assign({}, result, {
+      dryRun: dryRun,
+      elapsedMs: Date.now() - startedAt
+    }));
+    return result;
+  } catch (e) {
+    log_(runId, "ERROR", "MANUAL_PEOPLE_REFS_FATAL", {
+      message: String(e),
+      stack: e && e.stack ? String(e.stack).slice(0, 3000) : ""
+    });
+    throw e;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function validateManualPeopleRefsColumns_(mapping) {
+  const required = [
+    "ID",
+    CONFIG.MAIN_REF_COLS.CONTACT,
+    CONFIG.MAIN_REF_COLS.MANAGER,
+    CONFIG.MAIN_REF_COLS.BENEFICIAL,
+    "imię i nazwisko osoby kontaktowej",
+    "imię i nazwisko kierownika",
+    "imię i nazwisko beneficjenta"
+  ];
+  const missing = [];
+  for (let i = 0; i < required.length; i++) {
+    if (mapping.dstIndex[required[i]] == null) missing.push(required[i]);
+  }
+  if (missing.length) throw new Error("Missing destination columns for manual People refs repair: " + missing.join(", "));
+}
+
+function buildPeopleListRefIndex_(runId, peopleSheet) {
+  const headers = getHeaderRow_(peopleSheet);
+  const idx = indexByExact_(headers);
+  const required = [
+    CONFIG.PEOPLE.COL_PERSON_ID,
+    CONFIG.PEOPLE.COL_FULL_NAME,
+    CONFIG.PEOPLE.COL_ROLE,
+    CONFIG.PEOPLE.COL_ONBOARDING_ID
+  ];
+  const missing = [];
+  for (let i = 0; i < required.length; i++) {
+    if (idx[required[i]] == null) missing.push(required[i]);
+  }
+  if (missing.length) throw new Error("Missing People_List columns: " + missing.join(", "));
+
+  const out = {
+    byOnboardingAndRole: {},
+    duplicates: {},
+    rows: 0
+  };
+  const lastRow = peopleSheet.getLastRow();
+  if (lastRow < 2) return out;
+
+  const values = peopleSheet.getRange(2, 1, lastRow - 1, peopleSheet.getLastColumn()).getValues();
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const personId = String(row[idx[CONFIG.PEOPLE.COL_PERSON_ID]] || "").trim();
+    const onboardingId = String(row[idx[CONFIG.PEOPLE.COL_ONBOARDING_ID]] || "").trim();
+    const role = normalizeManualPeopleRole_(row[idx[CONFIG.PEOPLE.COL_ROLE]]);
+    const fullName = String(row[idx[CONFIG.PEOPLE.COL_FULL_NAME]] || "").trim();
+    if (!personId || !onboardingId || !role) continue;
+
+    const key = buildManualPeopleRefKey_(onboardingId, role);
+    const rec = {
+      personId: personId,
+      onboardingId: onboardingId,
+      role: role,
+      fullName: fullName,
+      fullNameKey: normalizeManualPersonName_(fullName),
+      rowNum: i + 2
+    };
+    if (!out.byOnboardingAndRole[key]) {
+      out.byOnboardingAndRole[key] = rec;
+    } else {
+      if (!out.duplicates[key]) out.duplicates[key] = [out.byOnboardingAndRole[key]];
+      out.duplicates[key].push(rec);
+    }
+    out.rows++;
+  }
+
+  log_(runId, "INFO", "MANUAL_PEOPLE_REFS_INDEX_READY", {
+    peopleRows: out.rows,
+    duplicateKeys: Object.keys(out.duplicates).length
+  });
+  return out;
+}
+
+function repairPeopleRefsRowsInSheet_(runId, dest, mapping, peopleIndex, options) {
+  const out = {
+    ok: true,
+    scanned: 0,
+    candidates: 0,
+    rowsUpdated: 0,
+    cellsUpdated: 0,
+    alreadyCorrect: 0,
+    skippedNoOnboardingId: 0,
+    skippedNoPersonName: 0,
+    skippedMissingPeopleRow: 0,
+    skippedDuplicatePeopleRows: 0,
+    skippedNameMismatch: 0,
+    failed: 0,
+    stoppedEarly: false
+  };
+
+  const lastRow = dest.getLastRow();
+  if (lastRow < 2) return out;
+  const props = PropertiesService.getScriptProperties();
+  const cursorRow = Math.max(2, Number(props.getProperty(MANUAL_PEOPLE_REFS_CURSOR_KEY) || 2));
+  const startIndex = Math.max(0, Math.min(lastRow - 2, cursorRow - 2));
+
+  const idx = {
+    id: mapping.dstIndex["ID"],
+    contactName: mapping.dstIndex["imię i nazwisko osoby kontaktowej"],
+    managerName: mapping.dstIndex["imię i nazwisko kierownika"],
+    beneficialName: mapping.dstIndex["imię i nazwisko beneficjenta"],
+    contactRef: mapping.dstIndex[CONFIG.MAIN_REF_COLS.CONTACT],
+    managerRef: mapping.dstIndex[CONFIG.MAIN_REF_COLS.MANAGER],
+    beneficialRef: mapping.dstIndex[CONFIG.MAIN_REF_COLS.BENEFICIAL]
+  };
+  const roles = [
+    { role: "Contact", nameIdx: idx.contactName, refIdx: idx.contactRef, refCol: CONFIG.MAIN_REF_COLS.CONTACT },
+    { role: "Manager", nameIdx: idx.managerName, refIdx: idx.managerRef, refCol: CONFIG.MAIN_REF_COLS.MANAGER },
+    { role: "BeneficialOwner", nameIdx: idx.beneficialName, refIdx: idx.beneficialRef, refCol: CONFIG.MAIN_REF_COLS.BENEFICIAL }
+  ];
+
+  const values = dest.getRange(2, 1, lastRow - 1, dest.getLastColumn()).getValues();
+  const startedAt = Number(options.startedAt || Date.now());
+  const maxRuntimeMs = Math.max(10000, Number(options.maxRuntimeMs || 300000));
+  const maxRows = Math.max(1, Number(options.maxRows || 250));
+  let lastVisitedRow = startIndex + 1;
+
+  for (let i = startIndex; i < values.length; i++) {
+    if (out.rowsUpdated >= maxRows) break;
+    if (Date.now() - startedAt > maxRuntimeMs - 10000) {
+      out.stoppedEarly = true;
+      break;
+    }
+
+    const rowNum = i + 2;
+    lastVisitedRow = rowNum;
+    const row = values[i];
+    out.scanned++;
+
+    const onboardingId = String(row[idx.id] || "").trim();
+    if (!onboardingId) {
+      out.skippedNoOnboardingId++;
+      continue;
+    }
+
+    const updates = [];
+    for (let r = 0; r < roles.length; r++) {
+      const roleCfg = roles[r];
+      const fullName = String(row[roleCfg.nameIdx] || "").trim();
+      const currentRef = String(row[roleCfg.refIdx] || "").trim();
+      if (!fullName) {
+        out.skippedNoPersonName++;
+        continue;
+      }
+
+      const key = buildManualPeopleRefKey_(onboardingId, roleCfg.role);
+      const duplicates = peopleIndex.duplicates[key] || null;
+      if (duplicates) {
+        const matched = findManualPeopleRefByName_(duplicates, fullName);
+        if (!matched) {
+          out.skippedDuplicatePeopleRows++;
+          log_(runId, "WARN", "MANUAL_PEOPLE_REFS_DUPLICATE_SKIP", {
+            rowNum: rowNum,
+            onboardingId: onboardingId,
+            role: roleCfg.role,
+            mainName: fullName,
+            matches: duplicates.length
+          });
+          continue;
+        }
+        if (currentRef === matched.personId) {
+          out.alreadyCorrect++;
+          continue;
+        }
+        updates.push({ refIdx: roleCfg.refIdx, refCol: roleCfg.refCol, value: matched.personId, role: roleCfg.role, current: currentRef });
+        continue;
+      }
+
+      const rec = peopleIndex.byOnboardingAndRole[key] || null;
+      if (!rec) {
+        out.skippedMissingPeopleRow++;
+        continue;
+      }
+      if (rec.fullNameKey && normalizeManualPersonName_(fullName) !== rec.fullNameKey) {
+        out.skippedNameMismatch++;
+        log_(runId, "WARN", "MANUAL_PEOPLE_REFS_NAME_MISMATCH_SKIP", {
+          rowNum: rowNum,
+          onboardingId: onboardingId,
+          role: roleCfg.role,
+          mainName: fullName,
+          peopleName: rec.fullName,
+          peopleRow: rec.rowNum
+        });
+        continue;
+      }
+      if (currentRef === rec.personId) {
+        out.alreadyCorrect++;
+        continue;
+      }
+      updates.push({ refIdx: roleCfg.refIdx, refCol: roleCfg.refCol, value: rec.personId, role: roleCfg.role, current: currentRef });
+    }
+
+    if (!updates.length) continue;
+    out.candidates++;
+
+    try {
+      if (!options.dryRun) {
+        for (let u = 0; u < updates.length; u++) {
+          dest.getRange(rowNum, updates[u].refIdx + 1).setValue(updates[u].value);
+        }
+        SpreadsheetApp.flush();
+      }
+      out.rowsUpdated++;
+      out.cellsUpdated += updates.length;
+      log_(runId, "INFO", "MANUAL_PEOPLE_REFS_ROW_UPDATED", {
+        rowNum: rowNum,
+        onboardingId: onboardingId,
+        dryRun: !!options.dryRun,
+        updates: updates.map(function (u) {
+          return {
+            role: u.role,
+            col: u.refCol,
+            from: u.current,
+            to: u.value
+          };
+        })
+      });
+    } catch (e) {
+      out.failed++;
+      log_(runId, "WARN", "MANUAL_PEOPLE_REFS_ROW_UPDATE_FAILED", {
+        rowNum: rowNum,
+        onboardingId: onboardingId,
+        err: String(e).slice(0, 900)
+      });
+    }
+  }
+
+  if (lastVisitedRow < lastRow && (out.stoppedEarly || out.rowsUpdated >= maxRows)) {
+    props.setProperty(MANUAL_PEOPLE_REFS_CURSOR_KEY, String(lastVisitedRow + 1));
+    out.nextCursorRow = lastVisitedRow + 1;
+  } else {
+    props.deleteProperty(MANUAL_PEOPLE_REFS_CURSOR_KEY);
+    out.nextCursorRow = "";
+  }
+
+  return out;
+}
+
+function findManualPeopleRefByName_(records, fullName) {
+  const nameKey = normalizeManualPersonName_(fullName);
+  for (let i = 0; i < (records || []).length; i++) {
+    if (records[i].fullNameKey && records[i].fullNameKey === nameKey) return records[i];
+  }
+  return null;
+}
+
+function buildManualPeopleRefKey_(onboardingId, role) {
+  return String(onboardingId || "").trim() + "|" + normalizeManualPeopleRole_(role);
+}
+
+function normalizeManualPeopleRole_(role) {
+  const raw = String(role || "").trim();
+  const key = raw.toLowerCase().replace(/[\s_\-]+/g, "");
+  if (key === "contact") return "Contact";
+  if (key === "manager") return "Manager";
+  if (key === "beneficialowner" || key === "beneficial" || key === "beneficiary") return "BeneficialOwner";
+  return raw;
+}
+
+function normalizeManualPersonName_(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
