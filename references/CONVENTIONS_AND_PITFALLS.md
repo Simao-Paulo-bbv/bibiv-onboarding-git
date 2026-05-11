@@ -40,7 +40,7 @@
 - Skip if row already has complete bank metadata.
 - Skip if REGON or VAT had a hard error.
 - We burned 1500 calls before adding these guards.
-- For manual repair, use `runManualRefreshIbanBankMetadata()` first. It only targets rows missing at least one bank metadata field. Use `runManualRefreshAllIbanBankMetadata()` only when you intentionally want to re-query every row with an account number.
+- For manual Google Sheet repair, use `runManualRefreshIbanBankMetadata()` first. It only targets rows missing at least one bank metadata field. Use `runManualRefreshAllIbanBankMetadata()` only when you intentionally want to re-query every row with an account number. These default repair functions do not update AppSheet.
 - AppSheet `Edit` payloads must not include blank bank metadata fields. Sending `swift/bic`, `Bank name`, `Bank address`, or `Bank city` as an empty string can clear AppSheet-side values.
 
 ### ❌ Do not delete DEST rows expecting clean re-import

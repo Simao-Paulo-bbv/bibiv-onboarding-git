@@ -10,16 +10,32 @@ const MANUAL_IBAN_REFRESH_CURSOR_KEY = "MANUAL_IBAN_REFRESH_CURSOR_ROW";
 function runManualRefreshIbanBankMetadata() {
   return refreshIbanBankMetadataRows_({
     forceAllRows: false,
-    updateAppSheet: true,
-    dryRun: false
+    updateAppSheet: false,
+    dryRun: false,
+    maxRows: 250
   });
 }
 
 function runManualRefreshAllIbanBankMetadata() {
   return refreshIbanBankMetadataRows_({
     forceAllRows: true,
+    updateAppSheet: false,
+    dryRun: false,
+    maxRows: 250
+  });
+}
+
+function resetManualIbanRefreshCursor() {
+  PropertiesService.getScriptProperties().deleteProperty(MANUAL_IBAN_REFRESH_CURSOR_KEY);
+  return { ok: true, cursorReset: true };
+}
+
+function runManualRefreshIbanBankMetadataAndAppSheet() {
+  return refreshIbanBankMetadataRows_({
+    forceAllRows: false,
     updateAppSheet: true,
-    dryRun: false
+    dryRun: false,
+    maxRows: 100
   });
 }
 
@@ -103,6 +119,7 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
     apiCalls: 0,
     sheetRowsUpdated: 0,
     appSheetRowsUpdated: 0,
+    appSheetRowsFailed: 0,
     skippedNoId: 0,
     skippedNoAccount: 0,
     skippedAlreadyComplete: 0,
@@ -198,12 +215,16 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
     try {
       if (!options.dryRun) {
         writeManualIbanMetaToSheet_(dest, idx, rowNum, meta);
+        out.sheetRowsUpdated++;
         if (options.updateAppSheet) {
-          updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta);
-          out.appSheetRowsUpdated++;
+          if (updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta)) {
+            out.appSheetRowsUpdated++;
+          } else {
+            out.appSheetRowsFailed++;
+          }
         }
       }
-      out.sheetRowsUpdated++;
+      if (options.dryRun) out.sheetRowsUpdated++;
       log_(runId, "INFO", "MANUAL_IBAN_ROW_UPDATED", {
         rowNum: rowNum,
         onboardingId: onboardingId,
@@ -264,7 +285,7 @@ function writeManualIbanMetaToSheet_(dest, idx, rowNum, meta) {
 }
 
 function updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta) {
-  const payload = {
+  const payloadWithLegacy = {
     ID: String(onboardingId || "").trim(),
     "kod swift banku": String(meta.bic || "").trim(),
     "swift/bic": String(meta.bic || "").trim(),
@@ -272,7 +293,35 @@ function updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta) {
     "Bank address": String(meta.address || "").trim(),
     "Bank city": String(meta.city || "").trim()
   };
-  callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payload, CONFIG.APPSHEET_ACTION_EDIT, rowNum);
+  try {
+    callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payloadWithLegacy, CONFIG.APPSHEET_ACTION_EDIT, rowNum);
+    return true;
+  } catch (firstErr) {
+    log_(runId, "WARN", "MANUAL_IBAN_APPSHEET_RETRY_NO_LEGACY_BIC", {
+      rowNum: rowNum,
+      onboardingId: onboardingId,
+      err: String(firstErr).slice(0, 900)
+    });
+  }
+
+  const payload = {
+    ID: String(onboardingId || "").trim(),
+    "swift/bic": String(meta.bic || "").trim(),
+    "Bank name": String(meta.bankName || "").trim(),
+    "Bank address": String(meta.address || "").trim(),
+    "Bank city": String(meta.city || "").trim()
+  };
+  try {
+    callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payload, CONFIG.APPSHEET_ACTION_EDIT, rowNum);
+    return true;
+  } catch (secondErr) {
+    log_(runId, "WARN", "MANUAL_IBAN_APPSHEET_UPDATE_FAILED", {
+      rowNum: rowNum,
+      onboardingId: onboardingId,
+      err: String(secondErr).slice(0, 900)
+    });
+    return false;
+  }
 }
 
 function isCompleteManualIbanMeta_(meta) {
