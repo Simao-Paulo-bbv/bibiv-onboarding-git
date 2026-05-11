@@ -500,9 +500,8 @@ function getExistingIbanMetadata_(dest, mapping, rowNum) {
     }
   }
   const swiftBic = getCol("swift/bic");
-  const legacySwift = getCol("kod swift banku");
   return {
-    bic: swiftBic || legacySwift,
+    bic: swiftBic,
     bankName: getCol("Bank name"),
     address: getCol("Bank address"),
     city: getCol("Bank city")
@@ -527,7 +526,6 @@ function writeBankMetaToRow_(dest, mapping, rowNum, bankMeta) {
   const city = String(meta.city || "").trim();
 
   if (bic) {
-    writeIfColExists_(dest, mapping, rowNum, "kod swift banku", bic);
     writeIfColExists_(dest, mapping, rowNum, "swift/bic", bic);
   }
   if (bankName) writeIfColExists_(dest, mapping, rowNum, "Bank name", bankName);

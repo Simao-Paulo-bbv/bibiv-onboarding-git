@@ -140,7 +140,6 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
   const idx = {
     id: mapping.dstIndex["ID"],
     account: mapping.dstIndex["numer rachunku bankowego"],
-    legacyBic: mapping.dstIndex["kod swift banku"],
     bic: mapping.dstIndex["swift/bic"],
     bankName: mapping.dstIndex["Bank name"],
     bankAddress: mapping.dstIndex["Bank address"],
@@ -179,7 +178,7 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
     }
 
     const existing = {
-      bic: String(row[idx.bic] || row[idx.legacyBic] || "").trim(),
+      bic: String(row[idx.bic] || "").trim(),
       bankName: String(row[idx.bankName] || "").trim(),
       address: String(row[idx.bankAddress] || "").trim(),
       city: String(row[idx.bankCity] || "").trim()
@@ -299,7 +298,6 @@ function writeManualIbanMetaToSheet_(dest, idx, rowNum, meta) {
   const address = String(meta && meta.address || "").trim();
   const city = String(meta && meta.city || "").trim();
 
-  if (bic && idx.legacyBic != null) dest.getRange(rowNum, idx.legacyBic + 1).setValue(bic);
   if (bic) dest.getRange(rowNum, idx.bic + 1).setValue(bic);
   if (bankName) dest.getRange(rowNum, idx.bankName + 1).setValue(bankName);
   if (address) dest.getRange(rowNum, idx.bankAddress + 1).setValue(address);
@@ -309,7 +307,6 @@ function writeManualIbanMetaToSheet_(dest, idx, rowNum, meta) {
 
 function readManualIbanMetaFromSheet_(dest, idx, rowNum) {
   const out = {};
-  if (idx.legacyBic != null) out.legacyBic = String(dest.getRange(rowNum, idx.legacyBic + 1).getDisplayValue() || "").trim();
   out.bic = String(dest.getRange(rowNum, idx.bic + 1).getDisplayValue() || "").trim();
   out.bankName = String(dest.getRange(rowNum, idx.bankName + 1).getDisplayValue() || "").trim();
   out.address = String(dest.getRange(rowNum, idx.bankAddress + 1).getDisplayValue() || "").trim();
@@ -319,7 +316,6 @@ function readManualIbanMetaFromSheet_(dest, idx, rowNum) {
 
 function manualIbanMetaColumnSummary_(idx) {
   return {
-    legacyBic: idx.legacyBic != null ? columnNumberToLetter_(idx.legacyBic + 1) : "",
     bic: columnNumberToLetter_(idx.bic + 1),
     bankName: columnNumberToLetter_(idx.bankName + 1),
     bankAddress: columnNumberToLetter_(idx.bankAddress + 1),
@@ -339,25 +335,6 @@ function columnNumberToLetter_(columnNumber) {
 }
 
 function updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta) {
-  const payloadWithLegacy = {
-    ID: String(onboardingId || "").trim(),
-    "kod swift banku": String(meta.bic || "").trim(),
-    "swift/bic": String(meta.bic || "").trim(),
-    "Bank name": String(meta.bankName || "").trim(),
-    "Bank address": String(meta.address || "").trim(),
-    "Bank city": String(meta.city || "").trim()
-  };
-  try {
-    callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payloadWithLegacy, CONFIG.APPSHEET_ACTION_EDIT, rowNum);
-    return true;
-  } catch (firstErr) {
-    log_(runId, "WARN", "MANUAL_IBAN_APPSHEET_RETRY_NO_LEGACY_BIC", {
-      rowNum: rowNum,
-      onboardingId: onboardingId,
-      err: String(firstErr).slice(0, 900)
-    });
-  }
-
   const payload = {
     ID: String(onboardingId || "").trim(),
     "swift/bic": String(meta.bic || "").trim(),

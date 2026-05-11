@@ -68,7 +68,7 @@ Critical guards:
 - IBAN cache: `CacheService.getScriptCache()` keyed by account number. Skipped entirely if full bank meta already on row.
 - IBAN skipped on hard REGON/VAT error.
 - VAT calls use GOV API only; no direct MF/relay fallback remains in the Apps Script.
-- Manual bank metadata repair lives in `14_Manual_Maintenance.js`: run `runManualRefreshIbanBankMetadata()` to refill Google Sheet rows with missing IBAN-derived fields, or `runManualRefreshAllIbanBankMetadata()` to force a fresh IBAN API check for all Google Sheet rows with an onboarding ID and bank account. It updates only `kod swift banku`, `swift/bic`, `Bank name`, `Bank address`, and `Bank city`. AppSheet is not updated by these default manual repair functions; use the explicit `runManualRefreshIbanBankMetadataAndAppSheet()` only when that side effect is wanted. Use `resetManualIbanRefreshCursor()` if the forced all-row refresh should start again from the top.
+- Manual bank metadata repair lives in `14_Manual_Maintenance.js`: run `runManualRefreshIbanBankMetadata()` to refill Google Sheet rows with missing IBAN-derived fields, or `runManualRefreshAllIbanBankMetadata()` to force a fresh IBAN API check for all Google Sheet rows with an onboarding ID and bank account. It updates only `swift/bic`, `Bank name`, `Bank address`, and `Bank city`. `kod swift banku` is a source/form field and is not written by IBAN API helpers. AppSheet is not updated by these default manual repair functions; use the explicit `runManualRefreshIbanBankMetadataAndAppSheet()` only when that side effect is wanted. Use `resetManualIbanRefreshCursor()` if the forced all-row refresh should start again from the top.
 
 ### `07_Payload_And_Normalization.js`
 - `buildAppSheetPayloadFromDest_(dest, rowNum, action)`:
