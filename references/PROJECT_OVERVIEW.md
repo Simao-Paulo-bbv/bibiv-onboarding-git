@@ -87,6 +87,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 | `11_Bank_Accounts.js` | Child table sync to AppSheet `Bank_Accounts` |
 | `12_Backfill_Existing.js` | Toggle-controlled backfill for legacy rows; currently OFF after representative-field catch-up |
 | `13_Name_Api_Refresh.js` | Maintenance-only refresh for historical `name_api`; updates only that column |
+| `14_Manual_Maintenance.js` | Manual repair helpers, including IBAN bank metadata refresh for sheet + AppSheet |
 | `apps-script-docs-creator/` | Standalone Apps Script `BIBIV_Onboarding_DocsCreator` for Agreement PDFs |
 
 ## External services

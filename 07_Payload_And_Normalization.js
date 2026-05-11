@@ -66,6 +66,9 @@ function buildAppSheetPayloadFromDest_(dest, rowNum, action) {
   // Some form fields may temporarily disappear in Squarespace.
   // Keep them in flow when present, but avoid sending empty placeholders to AppSheet.
   dropOptionalEmptyPayloadFields_(payload);
+  if (actionStr === "edit") {
+    dropBlankBankMetadataPayloadFields_(payload);
+  }
 
   delete payload["_RowNumber"];
   return payload;
@@ -246,6 +249,21 @@ function dropOptionalEmptyPayloadFields_(payload) {
   };
 
   for (const col in optionalCols) {
+    if (!Object.prototype.hasOwnProperty.call(payload, col)) continue;
+    if (isBlankOptionalPayloadValue_(payload[col])) delete payload[col];
+  }
+}
+
+function dropBlankBankMetadataPayloadFields_(payload) {
+  const bankMetaCols = {
+    "kod swift banku": true,
+    "swift/bic": true,
+    "Bank name": true,
+    "Bank address": true,
+    "Bank city": true
+  };
+
+  for (const col in bankMetaCols) {
     if (!Object.prototype.hasOwnProperty.call(payload, col)) continue;
     if (isBlankOptionalPayloadValue_(payload[col])) delete payload[col];
   }

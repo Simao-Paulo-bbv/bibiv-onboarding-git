@@ -68,6 +68,8 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
     nip: mapping.destKey.nipControlIdx != null ? mapping.destKey.nipControlIdx : mapping.destKey.nipIdx,
     submitted: mapping.destKey.submittedIdx,
     bankAccount: mapping.dstIndex["numer rachunku bankowego"],
+    bankBic: mapping.dstIndex["swift/bic"],
+    legacyBankBic: mapping.dstIndex["kod swift banku"],
     bankName: mapping.dstIndex["Bank name"],
     bankAddress: mapping.dstIndex["Bank address"],
     bankCity: mapping.dstIndex["Bank city"],
@@ -78,7 +80,7 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
   };
 
   const missingDestCols = [];
-  ["bankName", "bankAddress", "bankCity", "repEmail", "repName", "repPesel", "repPhone"].forEach((k) => {
+  ["bankBic", "bankName", "bankAddress", "bankCity", "repEmail", "repName", "repPesel", "repPhone"].forEach((k) => {
     if (idx[k] == null) missingDestCols.push(k);
   });
   if (missingDestCols.length) {
@@ -92,7 +94,7 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
 
   const colsToFetch = uniqueSortedIndices_([
     idx.nip, idx.submitted, idx.bankAccount,
-    idx.bankName, idx.bankAddress, idx.bankCity,
+    idx.bankBic, idx.legacyBankBic, idx.bankName, idx.bankAddress, idx.bankCity,
     idx.repEmail, idx.repName, idx.repPesel, idx.repPhone
   ]);
   if (!colsToFetch.length) return out;
@@ -119,11 +121,12 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
     const bankName = v(idx.bankName);
     const bankAddress = v(idx.bankAddress);
     const bankCity = v(idx.bankCity);
+    const bankBic = v(idx.bankBic) || (idx.legacyBankBic != null ? v(idx.legacyBankBic) : "");
     const accountRaw = v(idx.bankAccount);
     const accountNorm = normalizeBackfillBankAccount_(accountRaw);
 
     const needsRep = isBlankForBackfill_(repEmail) || isBlankForBackfill_(repName) || isBlankForBackfill_(repPesel) || isBlankForBackfill_(repPhone);
-    const needsBank = !!accountNorm && (isBlankForBackfill_(bankName) || isBlankForBackfill_(bankAddress) || isBlankForBackfill_(bankCity));
+    const needsBank = !!accountNorm && (isBlankForBackfill_(bankBic) || isBlankForBackfill_(bankName) || isBlankForBackfill_(bankAddress) || isBlankForBackfill_(bankCity));
     if (!needsRep && !needsBank) continue;
 
     const key = nip ? makeDedupeKey_(nip, submitted) : "";
@@ -140,6 +143,7 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
         repName: repName,
         repPesel: repPesel,
         repPhone: repPhone,
+        bankBic: bankBic,
         bankName: bankName,
         bankAddress: bankAddress,
         bankCity: bankCity
@@ -188,6 +192,10 @@ function backfillExistingMissingFields_(runId, mapping, source, dest, startedAt)
         out.apiCalls++;
       }
       if (meta) {
+        if (isBlankForBackfill_(c.current.bankBic) && meta.bic) {
+          if (idx.legacyBankBic != null) updates.push({ col: idx.legacyBankBic + 1, value: meta.bic });
+          updates.push({ col: idx.bankBic + 1, value: meta.bic });
+        }
         if (isBlankForBackfill_(c.current.bankName) && meta.bankName) updates.push({ col: idx.bankName + 1, value: meta.bankName });
         if (isBlankForBackfill_(c.current.bankAddress) && meta.address) updates.push({ col: idx.bankAddress + 1, value: meta.address });
         if (isBlankForBackfill_(c.current.bankCity) && meta.city) updates.push({ col: idx.bankCity + 1, value: meta.city });
@@ -305,6 +313,7 @@ function fetchIbanMetaForBackfill_(runId, rowNum, normalizedAccount) {
     }
     const meta = pickBankMetaFromIban_(res.parsed);
     return {
+      bic: String(meta.bic || "").trim(),
       bankName: String(meta.bankName || "").trim(),
       address: String(meta.address || "").trim(),
       city: String(meta.city || "").trim()
