@@ -225,9 +225,11 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
       });
     }
 
+    let verified = {};
     try {
       if (!options.dryRun) {
         writeManualIbanMetaToSheet_(dest, idx, rowNum, meta);
+        verified = readManualIbanMetaFromSheet_(dest, idx, rowNum);
         out.sheetRowsUpdated++;
         if (options.updateAppSheet) {
           if (updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta)) {
@@ -242,6 +244,8 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
         rowNum: rowNum,
         onboardingId: onboardingId,
         accountLast4: account.slice(-4),
+        cols: manualIbanMetaColumnSummary_(idx),
+        sheetValues: options.dryRun ? {} : verified,
         dryRun: !!options.dryRun
       });
     } catch (e) {
@@ -301,6 +305,37 @@ function writeManualIbanMetaToSheet_(dest, idx, rowNum, meta) {
   if (address) dest.getRange(rowNum, idx.bankAddress + 1).setValue(address);
   if (city) dest.getRange(rowNum, idx.bankCity + 1).setValue(city);
   SpreadsheetApp.flush();
+}
+
+function readManualIbanMetaFromSheet_(dest, idx, rowNum) {
+  const out = {};
+  if (idx.legacyBic != null) out.legacyBic = String(dest.getRange(rowNum, idx.legacyBic + 1).getDisplayValue() || "").trim();
+  out.bic = String(dest.getRange(rowNum, idx.bic + 1).getDisplayValue() || "").trim();
+  out.bankName = String(dest.getRange(rowNum, idx.bankName + 1).getDisplayValue() || "").trim();
+  out.address = String(dest.getRange(rowNum, idx.bankAddress + 1).getDisplayValue() || "").trim();
+  out.city = String(dest.getRange(rowNum, idx.bankCity + 1).getDisplayValue() || "").trim();
+  return out;
+}
+
+function manualIbanMetaColumnSummary_(idx) {
+  return {
+    legacyBic: idx.legacyBic != null ? columnNumberToLetter_(idx.legacyBic + 1) : "",
+    bic: columnNumberToLetter_(idx.bic + 1),
+    bankName: columnNumberToLetter_(idx.bankName + 1),
+    bankAddress: columnNumberToLetter_(idx.bankAddress + 1),
+    bankCity: columnNumberToLetter_(idx.bankCity + 1)
+  };
+}
+
+function columnNumberToLetter_(columnNumber) {
+  let n = Number(columnNumber || 0);
+  let out = "";
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    out = String.fromCharCode(65 + rem) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
 }
 
 function updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta) {
