@@ -10,7 +10,6 @@ const MANUAL_IBAN_REFRESH_CURSOR_KEY = "MANUAL_IBAN_REFRESH_CURSOR_ROW";
 function runManualRefreshIbanBankMetadata() {
   return refreshIbanBankMetadataRows_({
     forceAllRows: false,
-    updateAppSheet: false,
     dryRun: false,
     maxRows: 250
   });
@@ -19,7 +18,6 @@ function runManualRefreshIbanBankMetadata() {
 function runManualRefreshAllIbanBankMetadata() {
   return refreshIbanBankMetadataRows_({
     forceAllRows: true,
-    updateAppSheet: false,
     dryRun: false,
     maxRows: 250
   });
@@ -30,19 +28,9 @@ function resetManualIbanRefreshCursor() {
   return { ok: true, cursorReset: true };
 }
 
-function runManualRefreshIbanBankMetadataAndAppSheet() {
-  return refreshIbanBankMetadataRows_({
-    forceAllRows: false,
-    updateAppSheet: true,
-    dryRun: false,
-    maxRows: 100
-  });
-}
-
 function runManualAuditIbanBankMetadata() {
   return refreshIbanBankMetadataRows_({
     forceAllRows: false,
-    updateAppSheet: false,
     dryRun: true
   });
 }
@@ -54,7 +42,6 @@ function refreshIbanBankMetadataRows_(options) {
   const maxRuntimeMs = Number(options.maxRuntimeMs || 300000);
   const maxRows = Number(options.maxRows || 100);
   const forceAllRows = !!options.forceAllRows;
-  const updateAppSheet = options.updateAppSheet !== false;
   const dryRun = !!options.dryRun;
 
   const lock = LockService.getScriptLock();
@@ -80,13 +67,11 @@ function refreshIbanBankMetadataRows_(options) {
       maxRuntimeMs: maxRuntimeMs,
       maxRows: maxRows,
       forceAllRows: forceAllRows,
-      updateAppSheet: updateAppSheet,
       dryRun: dryRun
     });
 
     log_(runId, "INFO", "MANUAL_IBAN_REFRESH_END", Object.assign({}, result, {
       forceAllRows: forceAllRows,
-      updateAppSheet: updateAppSheet,
       dryRun: dryRun,
       elapsedMs: Date.now() - startedAt
     }));
@@ -118,8 +103,6 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
     candidates: 0,
     apiCalls: 0,
     sheetRowsUpdated: 0,
-    appSheetRowsUpdated: 0,
-    appSheetRowsFailed: 0,
     skippedNoId: 0,
     skippedNoAccount: 0,
     skippedAlreadyComplete: 0,
@@ -230,13 +213,6 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
         writeManualIbanMetaToSheet_(dest, idx, rowNum, meta);
         verified = readManualIbanMetaFromSheet_(dest, idx, rowNum);
         out.sheetRowsUpdated++;
-        if (options.updateAppSheet) {
-          if (updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta)) {
-            out.appSheetRowsUpdated++;
-          } else {
-            out.appSheetRowsFailed++;
-          }
-        }
       }
       if (options.dryRun) out.sheetRowsUpdated++;
       log_(runId, "INFO", "MANUAL_IBAN_ROW_UPDATED", {
@@ -332,27 +308,6 @@ function columnNumberToLetter_(columnNumber) {
     n = Math.floor((n - 1) / 26);
   }
   return out;
-}
-
-function updateManualIbanMetaInAppSheet_(runId, rowNum, onboardingId, meta) {
-  const payload = {
-    ID: String(onboardingId || "").trim(),
-    "swift/bic": String(meta.bic || "").trim(),
-    "Bank name": String(meta.bankName || "").trim(),
-    "Bank address": String(meta.address || "").trim(),
-    "Bank city": String(meta.city || "").trim()
-  };
-  try {
-    callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, payload, CONFIG.APPSHEET_ACTION_EDIT, rowNum);
-    return true;
-  } catch (secondErr) {
-    log_(runId, "WARN", "MANUAL_IBAN_APPSHEET_UPDATE_FAILED", {
-      rowNum: rowNum,
-      onboardingId: onboardingId,
-      err: String(secondErr).slice(0, 900)
-    });
-    return false;
-  }
 }
 
 function isCompleteManualIbanMeta_(meta) {
