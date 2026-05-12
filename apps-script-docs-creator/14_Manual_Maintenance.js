@@ -12,7 +12,7 @@ const MANUAL_TEMPLATE_PDF_GENERATION = {
 function runManualGenerateTemplatePdfs() {
   const runId = makeRunId_();
   const settings = getManualTemplatePdfGenerationSettings_();
-  const templateRow = buildFallbackTemplateRow_(runId, settings.templateDocId);
+  const templateRow = findManualDocTemplateRow_(runId, settings.templateDocId);
   const outputRootFolder = DriveApp.getFolderById(settings.outputFolderId);
   const outputFolder = ensureManualJobOutputFolder_(runId, outputRootFolder);
   const results = [];
@@ -119,23 +119,53 @@ function getManualTemplatePdfGenerationSettings_() {
 }
 
 function buildManualTemplatePdfFileRow_(runId, mainRow, onboardingId, outputFolder, templateDocId) {
-  const templateFile = DriveApp.getFileById(templateDocId);
-  const templateName = String(templateFile.getName() || "").trim() || "Template";
-  const pdfName = buildManualTemplatePdfFileName_(mainRow, onboardingId, templateName);
+  const existingAgreementFileRow = findManualAgreementFileRow_(runId, onboardingId, templateDocId);
+  const pdfName = buildManualTemplatePdfFileName_(runId, mainRow, existingAgreementFileRow, templateDocId);
   const relativePath = pdfName;
 
   log_(runId, "INFO", "MANUAL_TEMPLATE_PDF_FILE_ROW", {
     onboardingId: onboardingId,
     outputFolderId: outputFolder.getId(),
-    fileName: pdfName
+    fileName: pdfName,
+    namingSource: existingAgreementFileRow ? "Agreements_Files" : "AppSheetFormulaFallback"
   });
 
   return {
     ID: "manual-" + onboardingId + "-" + templateDocId.slice(0, 8),
     Onboarding_ID: onboardingId,
     Template_ID_Reference: String(templateDocId || "").trim(),
+    File_Name: String(pdfName || "").replace(/\.pdf$/i, ""),
+    Prefix: existingAgreementFileRow ? (getField_(existingAgreementFileRow, "Prefix") || "") : "",
     File: relativePath
   };
+}
+
+function findManualDocTemplateRow_(runId, templateDocId) {
+  const cleanTemplateId = String(templateDocId || "").trim();
+  if (!cleanTemplateId) throw new Error("Missing template doc ID.");
+
+  const sheetName = getSheetNameForDocgenTable_(DOCGEN_TABLES.DOC_TEMPLATES);
+  const values = fetchManualSpreadsheetSheetValues_(runId, sheetName);
+  const row = findRowInValuesByColumn_(values, "Template_ID", cleanTemplateId);
+  if (row) return row;
+  return buildFallbackTemplateRow_(runId, cleanTemplateId);
+}
+
+function findManualAgreementFileRow_(runId, onboardingId, templateDocId) {
+  const cleanOnboardingId = String(onboardingId || "").trim();
+  const cleanTemplateId = String(templateDocId || "").trim();
+  if (!cleanOnboardingId || !cleanTemplateId) return null;
+
+  const sheetName = getSheetNameForDocgenTable_(DOCGEN_TABLES.AGREEMENTS_FILES);
+  const values = fetchManualSpreadsheetSheetValues_(runId, sheetName);
+  const rows = buildRowsFromValues_(values);
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (String(getField_(row, "Onboarding_ID") || "").trim() !== cleanOnboardingId) continue;
+    if (String(getField_(row, "Template_ID_Reference") || "").trim() !== cleanTemplateId) continue;
+    return row;
+  }
+  return null;
 }
 
 function findManualMainOnboardingRow_(runId, onboardingId) {
@@ -148,21 +178,8 @@ function findManualMainOnboardingRow_(runId, onboardingId) {
     throw new Error("Main onboarding sheet is empty: " + sheetName);
   }
 
-  const headers = values[0].map(header => String(header || "").trim());
-  const idColumnIndex = headers.indexOf("ID");
-  if (idColumnIndex < 0) {
-    throw new Error("Column ID not found in sheet: " + sheetName);
-  }
-
-  for (let r = 1; r < values.length; r++) {
-    if (String(values[r][idColumnIndex] || "").trim() !== cleanId) continue;
-    const row = {};
-    headers.forEach((header, c) => {
-      if (header) row[header] = values[r][c];
-    });
-    return row;
-  }
-
+  const row = findRowInValuesByColumn_(values, "ID", cleanId);
+  if (row) return row;
   throw new Error("Onboarding row not found in sheet for ID: " + cleanId);
 }
 
@@ -202,6 +219,37 @@ function fetchManualSpreadsheetSheetValues_(runId, sheetName) {
   return values;
 }
 
+function findRowInValuesByColumn_(values, columnName, wantedValue) {
+  const headers = (values[0] || []).map(header => String(header || "").trim());
+  const columnIndex = headers.indexOf(String(columnName || "").trim());
+  if (columnIndex < 0) {
+    throw new Error("Column " + columnName + " not found in sheet.");
+  }
+
+  for (let r = 1; r < values.length; r++) {
+    if (String(values[r][columnIndex] || "").trim() !== String(wantedValue || "").trim()) continue;
+    const row = {};
+    headers.forEach((header, c) => {
+      if (header) row[header] = values[r][c];
+    });
+    return row;
+  }
+  return null;
+}
+
+function buildRowsFromValues_(values) {
+  const headers = (values[0] || []).map(header => String(header || "").trim());
+  const rows = [];
+  for (let r = 1; r < values.length; r++) {
+    const row = {};
+    headers.forEach((header, c) => {
+      if (header) row[header] = values[r][c];
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
 function ensureManualJobOutputFolder_(runId, outputRootFolder) {
   const datePart = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
   const prefix = datePart + "__v";
@@ -226,15 +274,29 @@ function ensureManualJobOutputFolder_(runId, outputRootFolder) {
   return jobFolder;
 }
 
-function buildManualTemplatePdfFileName_(mainRow, onboardingId, templateName) {
-  const companyName = sanitizeDriveFileNamePart_(
-    getField_(mainRow, "Company_name") ||
-    getField_(mainRow, "Company Name") ||
-    getField_(mainRow, "Nazwa firmy") ||
-    onboardingId
+function buildManualTemplatePdfFileName_(runId, mainRow, existingAgreementFileRow, templateDocId) {
+  if (existingAgreementFileRow) {
+    const existingFile = String(getField_(existingAgreementFileRow, "File") || "").trim();
+    const existingName = existingFile ? existingFile.split("/").pop() : "";
+    if (existingName) return existingName;
+  }
+
+  const templateRow = findManualDocTemplateRow_(runId, templateDocId);
+  const prefix = sanitizeDriveFileNamePart_(
+    getField_(templateRow, "File_Name_Prefix") ||
+    getField_(templateRow, "Prefix") ||
+    getField_(templateRow, "Template_Name") ||
+    getField_(templateRow, "Name") ||
+    "Document"
   );
-  const templatePart = sanitizeDriveFileNamePart_(templateName.replace(/\.gdoc$/i, "").replace(/\.docx$/i, ""));
-  return [templatePart, companyName, onboardingId].filter(Boolean).join("__") + ".pdf";
+  const nipControl = sanitizeDriveFileNamePart_(getManualNipControl_(mainRow));
+  const datePart = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy");
+  const extension = normalizeManualFileExtension_(
+    getField_(templateRow, "File Extension") ||
+    getField_(templateRow, "File_Extension") ||
+    ".pdf"
+  );
+  return [prefix, nipControl, datePart].filter(Boolean).join("__") + extension;
 }
 
 function sanitizeDriveFileNamePart_(value) {
@@ -244,4 +306,19 @@ function sanitizeDriveFileNamePart_(value) {
     .replace(/\s+/g, " ")
     .replace(/\.+$/g, "")
     .trim();
+}
+
+function getManualNipControl_(mainRow) {
+  return String(
+    getField_(mainRow, "NIP_Control") ||
+    getField_(mainRow, "NIP Control") ||
+    getField_(mainRow, "NIP") ||
+    ""
+  ).trim();
+}
+
+function normalizeManualFileExtension_(value) {
+  const clean = String(value || "").trim();
+  if (!clean) return ".pdf";
+  return clean.charAt(0) === "." ? clean : "." + clean;
 }
