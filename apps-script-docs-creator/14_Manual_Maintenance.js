@@ -143,7 +143,7 @@ function findManualMainOnboardingRow_(runId, onboardingId) {
   if (!cleanId) throw new Error("Missing onboarding ID.");
 
   const sheetName = getSheetNameForDocgenTable_(DOCGEN_TABLES.MAIN);
-  const values = fetchDocGeneratorSheetValues_(runId, sheetName);
+  const values = fetchManualSpreadsheetSheetValues_(runId, sheetName);
   if (!values || values.length < 2) {
     throw new Error("Main onboarding sheet is empty: " + sheetName);
   }
@@ -164,6 +164,42 @@ function findManualMainOnboardingRow_(runId, onboardingId) {
   }
 
   throw new Error("Onboarding row not found in sheet for ID: " + cleanId);
+}
+
+function fetchManualSpreadsheetSheetValues_(runId, sheetName) {
+  const cleanSheetName = String(sheetName || "").trim();
+  if (!cleanSheetName) return [];
+  if (DOCGEN_RUNTIME_CACHE.sheetValuesByName[cleanSheetName]) {
+    return DOCGEN_RUNTIME_CACHE.sheetValuesByName[cleanSheetName];
+  }
+
+  const spreadsheetId = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
+  if (!spreadsheetId) {
+    throw new Error("CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID is blank.");
+  }
+
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const sheet = spreadsheet.getSheetByName(cleanSheetName);
+  if (!sheet) {
+    throw new Error("Sheet not found: " + cleanSheetName);
+  }
+
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+  if (lastRow < 1 || lastColumn < 1) {
+    DOCGEN_RUNTIME_CACHE.sheetValuesByName[cleanSheetName] = [];
+    return [];
+  }
+
+  const values = sheet.getRange(1, 1, lastRow, lastColumn).getValues();
+  DOCGEN_RUNTIME_CACHE.sheetValuesByName[cleanSheetName] = values;
+  log_(runId, "INFO", "MANUAL_SPREADSHEET_READ", {
+    spreadsheetId: spreadsheetId,
+    sheetName: cleanSheetName,
+    rows: values.length,
+    cols: lastColumn
+  });
+  return values;
 }
 
 function ensureManualJobOutputFolder_(runId, outputRootFolder) {
