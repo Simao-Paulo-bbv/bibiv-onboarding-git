@@ -3,6 +3,7 @@
  *******************************************************/
 
 const MANUAL_TEMPLATE_PDF_GENERATION = {
+  ONBOARDING_IDS_TEXT: "",
   ONBOARDING_IDS: [],
   OUTPUT_FOLDER_ID: "",
   TEMPLATE_DOC_ID: ""
@@ -77,8 +78,18 @@ function runManualGenerateTemplatePdfs() {
 
 function getManualTemplatePdfGenerationSettings_() {
   const rawIds = MANUAL_TEMPLATE_PDF_GENERATION.ONBOARDING_IDS || [];
+  const rawIdsText = String(MANUAL_TEMPLATE_PDF_GENERATION.ONBOARDING_IDS_TEXT || "");
   const onboardingIds = [];
   const seen = {};
+
+  rawIdsText
+    .split(/[\n,\t; ]+/)
+    .forEach(value => {
+      const clean = String(value || "").trim();
+      if (!clean || seen[clean]) return;
+      seen[clean] = true;
+      onboardingIds.push(clean);
+    });
 
   rawIds.forEach(value => {
     const clean = String(value || "").trim();
@@ -91,7 +102,7 @@ function getManualTemplatePdfGenerationSettings_() {
   const templateDocId = String(MANUAL_TEMPLATE_PDF_GENERATION.TEMPLATE_DOC_ID || "").trim();
 
   if (!onboardingIds.length) {
-    throw new Error("MANUAL_TEMPLATE_PDF_GENERATION.ONBOARDING_IDS is empty.");
+    throw new Error("MANUAL_TEMPLATE_PDF_GENERATION.ONBOARDING_IDS_TEXT / ONBOARDING_IDS is empty.");
   }
   if (!outputFolderId) {
     throw new Error("MANUAL_TEMPLATE_PDF_GENERATION.OUTPUT_FOLDER_ID is blank.");
