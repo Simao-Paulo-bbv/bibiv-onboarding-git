@@ -27,7 +27,7 @@ function runManualGenerateTemplatePdfs() {
 
   settings.onboardingIds.forEach(onboardingId => {
     try {
-      const mainRow = findMainOnboardingRow_(runId, onboardingId);
+      const mainRow = findManualMainOnboardingRow_(runId, onboardingId);
       const fileRow = buildManualTemplatePdfFileRow_(runId, mainRow, onboardingId, outputFolder, settings.templateDocId);
       const generated = generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow, {
         outputRootFolder: outputFolder
@@ -136,6 +136,34 @@ function buildManualTemplatePdfFileRow_(runId, mainRow, onboardingId, outputFold
     Template_ID_Reference: String(templateDocId || "").trim(),
     File: relativePath
   };
+}
+
+function findManualMainOnboardingRow_(runId, onboardingId) {
+  const cleanId = String(onboardingId || "").trim();
+  if (!cleanId) throw new Error("Missing onboarding ID.");
+
+  const sheetName = getSheetNameForDocgenTable_(DOCGEN_TABLES.MAIN);
+  const values = fetchDocGeneratorSheetValues_(runId, sheetName);
+  if (!values || values.length < 2) {
+    throw new Error("Main onboarding sheet is empty: " + sheetName);
+  }
+
+  const headers = values[0].map(header => String(header || "").trim());
+  const idColumnIndex = headers.indexOf("ID");
+  if (idColumnIndex < 0) {
+    throw new Error("Column ID not found in sheet: " + sheetName);
+  }
+
+  for (let r = 1; r < values.length; r++) {
+    if (String(values[r][idColumnIndex] || "").trim() !== cleanId) continue;
+    const row = {};
+    headers.forEach((header, c) => {
+      if (header) row[header] = values[r][c];
+    });
+    return row;
+  }
+
+  throw new Error("Onboarding row not found in sheet for ID: " + cleanId);
 }
 
 function ensureManualJobOutputFolder_(runId, outputRootFolder) {

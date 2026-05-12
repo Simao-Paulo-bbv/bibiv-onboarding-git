@@ -1644,7 +1644,14 @@ function ensureFolderPathAndName_(rootFolder, relativePath) {
   let effectiveRoot = rootFolder;
   let folder = rootFolder;
   const firstFolderName = parts.shift();
-  if (!firstFolderName) throw new Error("File path has no folder segment: " + relativePath);
+  if (!firstFolderName) {
+    if (!rootFolder) throw new Error("File path has no folder segment: " + relativePath);
+    return {
+      rootFolder: rootFolder,
+      folder: rootFolder,
+      fileName: fileName
+    };
+  }
 
   if (folder) {
     folder = getRequiredFileRootFolder_(folder, firstFolderName);
