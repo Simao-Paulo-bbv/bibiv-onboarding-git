@@ -12,13 +12,16 @@ function runManualGenerateTemplatePdfs() {
   const runId = makeRunId_();
   const settings = getManualTemplatePdfGenerationSettings_();
   const templateRow = buildFallbackTemplateRow_(runId, settings.templateDocId);
-  const outputFolder = DriveApp.getFolderById(settings.outputFolderId);
+  const outputRootFolder = DriveApp.getFolderById(settings.outputFolderId);
+  const outputFolder = ensureManualJobOutputFolder_(runId, outputRootFolder);
   const results = [];
 
   log_(runId, "INFO", "MANUAL_TEMPLATE_PDF_GENERATION_START", {
     onboardingIds: settings.onboardingIds,
     outputFolderId: settings.outputFolderId,
-    templateDocId: settings.templateDocId
+    templateDocId: settings.templateDocId,
+    jobFolderId: outputFolder.getId(),
+    jobFolderName: outputFolder.getName()
   });
 
   settings.onboardingIds.forEach(onboardingId => {
@@ -59,7 +62,9 @@ function runManualGenerateTemplatePdfs() {
     total: results.length,
     failed: failed.length,
     outputFolderId: settings.outputFolderId,
-    templateDocId: settings.templateDocId
+    templateDocId: settings.templateDocId,
+    jobFolderId: outputFolder.getId(),
+    jobFolderName: outputFolder.getName()
   });
 
   return {
@@ -120,6 +125,30 @@ function buildManualTemplatePdfFileRow_(runId, mainRow, onboardingId, outputFold
     Template_ID_Reference: String(templateDocId || "").trim(),
     File: relativePath
   };
+}
+
+function ensureManualJobOutputFolder_(runId, outputRootFolder) {
+  const datePart = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  const prefix = datePart + "__v";
+  let nextVersion = 1;
+  const folders = outputRootFolder.getFolders();
+
+  while (folders.hasNext()) {
+    const folder = folders.next();
+    const name = String(folder.getName() || "").trim();
+    const match = name.match(new RegExp("^" + escapeRegExp_(prefix) + "(\\d+)$"));
+    if (!match) continue;
+    nextVersion = Math.max(nextVersion, Number(match[1]) + 1);
+  }
+
+  const folderName = prefix + String(nextVersion);
+  const jobFolder = outputRootFolder.createFolder(folderName);
+  log_(runId, "INFO", "MANUAL_TEMPLATE_PDF_JOB_FOLDER_CREATED", {
+    outputRootFolderId: outputRootFolder.getId(),
+    jobFolderId: jobFolder.getId(),
+    jobFolderName: folderName
+  });
+  return jobFolder;
 }
 
 function buildManualTemplatePdfFileName_(mainRow, onboardingId, templateName) {
