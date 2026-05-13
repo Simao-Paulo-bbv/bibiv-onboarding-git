@@ -36,6 +36,60 @@ function runAuthorizeDocGeneratorSheetAccess() {
   };
 }
 
+function runAuthorizeDocGeneratorDocsApiAccess() {
+  const runId = makeRunId_();
+  const doc = DocumentApp.create("DOCGEN Docs API authorization check");
+  const docId = doc.getId();
+  doc.getBody().appendParagraph("DOCGEN_DOCS_API_AUTH_CHECK");
+  doc.saveAndClose();
+
+  try {
+    const url = "https://docs.googleapis.com/v1/documents/" + encodeURIComponent(docId) +
+      "?fields=documentId,title,body";
+    const response = UrlFetchApp.fetch(url, {
+      method: "get",
+      headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    const httpCode = response.getResponseCode();
+    const body = response.getContentText();
+
+    if (httpCode < 200 || httpCode >= 300) {
+      log_(runId, "ERROR", "DOCGEN_DOCS_API_AUTH_FAILED", {
+        httpCode: httpCode,
+        docId: docId,
+        message: body.slice(0, 1000)
+      });
+      throw new Error(
+        "Google Docs API authorization check failed. httpCode=" + httpCode +
+        ". If the message says docs.googleapis.com is disabled, enable Google Docs API in the Google Cloud project first."
+      );
+    }
+
+    const parsed = safeJsonParse_(body) || {};
+    log_(runId, "INFO", "DOCGEN_DOCS_API_AUTHORIZED", {
+      httpCode: httpCode,
+      docId: docId,
+      title: parsed.title || ""
+    });
+    return {
+      ok: true,
+      httpCode: httpCode,
+      docId: docId,
+      title: parsed.title || ""
+    };
+  } finally {
+    try {
+      DriveApp.getFileById(docId).setTrashed(true);
+    } catch (e) {
+      log_(runId, "WARN", "DOCGEN_DOCS_API_AUTH_TEMP_DOC_CLEANUP_FAILED", {
+        docId: docId,
+        error: e && e.message || String(e)
+      });
+    }
+  }
+}
+
 function runManualGenerateTemplatePdfs() {
   const runId = makeRunId_();
   const settings = getManualTemplatePdfGenerationSettings_();
