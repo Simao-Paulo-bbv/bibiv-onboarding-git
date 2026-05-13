@@ -696,7 +696,7 @@ function generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow, o
 
   timeDocgenStep_(runId, "DOCGEN_TIMING_REPLACE_PLACEHOLDERS", {
     agreementFileId: getField_(fileRow, "ID")
-  }, () => replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow));
+  }, () => replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow, runId));
   const exportTabId = timeDocgenStep_(runId, "DOCGEN_TIMING_GET_TAB", {
     agreementFileId: getField_(fileRow, "ID")
   }, () => getFirstDocumentTabId_(doc));
@@ -746,7 +746,7 @@ function timeDocgenStep_(runId, eventName, data, fn) {
   }
 }
 
-function replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow) {
+function replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow, runId) {
   const values = {};
   addReplacementValues_(values, mainRow, "");
   addReplacementValues_(values, fileRow, "File.");
@@ -761,6 +761,22 @@ function replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow) {
     File: fileRow
   };
 
+  const stats = replaceTemplatePlaceholdersInTextNodes_(sections, context, values);
+  const needsFallback = sectionsContainTemplateMarkers_(sections);
+  if (runId) {
+    log_(runId, "INFO", "DOCGEN_PLACEHOLDER_FAST_PASS", {
+      textNodes: stats.textNodes,
+      nodesWithMarkers: stats.nodesWithMarkers,
+      nodesUpdated: stats.nodesUpdated,
+      fallback: needsFallback
+    });
+  }
+  if (!needsFallback) return;
+
+  replaceTemplatePlaceholdersFallback_(sections, context, values, mainRow, templateRow);
+}
+
+function replaceTemplatePlaceholdersFallback_(sections, context, values, mainRow, templateRow) {
   replaceAppSheetIfExpressionsInTextNodes_(sections, context);
   replaceAppSheetIfExpressions_(sections, context);
   replaceKnownAppSheetExpressions_(sections, context);
@@ -773,6 +789,88 @@ function replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow) {
   replaceDereferencedValues_(sections, "Onboarding_ID", mainRow);
   replaceDereferencedValues_(sections, "Template_ID_Reference", templateRow);
   replaceDereferencedValues_(sections, "Template_ID", templateRow);
+}
+
+function replaceTemplatePlaceholdersInTextNodes_(sections, context, values) {
+  const stats = {
+    textNodes: 0,
+    nodesWithMarkers: 0,
+    nodesUpdated: 0
+  };
+
+  sections.forEach(section => {
+    walkDocElement_(section, element => {
+      if (!element || element.getType() !== DocumentApp.ElementType.TEXT) return;
+      stats.textNodes++;
+      const text = element.asText();
+      const original = text.getText();
+      if (!textContainsTemplateMarker_(original)) return;
+      stats.nodesWithMarkers++;
+
+      const updated = replaceTemplatePlaceholdersInString_(original, context, values);
+      if (updated !== original) {
+        text.setText(updated);
+        stats.nodesUpdated++;
+      }
+    });
+  });
+
+  return stats;
+}
+
+function replaceTemplatePlaceholdersInString_(text, context, values) {
+  let out = String(text || "");
+
+  out = out.replace(/<<\s*IF\([\s\S]*?\)\s*>>/g, match => {
+    const replacement = evaluateAppSheetIfExpression_(match, context);
+    return replacement == null ? match : replacement;
+  });
+
+  out = out.replace(/<<\s*TODAY\(\)\s*>>/gi, () =>
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd-MM-yyyy")
+  );
+
+  out = out.replace(/<<[\s\S]*?>>/g, match => {
+    const known = evaluateKnownAppSheetExpression_(match, context);
+    if (known != null) return stringifyDocValue_(known);
+
+    const deref = match.match(/^<<\s*\[[^\]]+\]\.(?:\[[^\]]+\]|[^<>]+?)\s*>>$/);
+    if (deref) return stringifyDocValue_(resolveAppSheetValue_(match, context));
+
+    const simple = match.match(/^<<\s*\[([^\]]+)\]\s*>>$/);
+    if (simple) {
+      const field = simple[1];
+      const direct = values[field];
+      return stringifyDocValue_(direct != null ? direct : resolveAppSheetValue_("[" + field + "]", context));
+    }
+
+    return match;
+  });
+
+  out = out.replace(/\{\{([^{}]+)\}\}/g, (match, rawKey) => {
+    const key = String(rawKey || "").trim();
+    if (!key) return match;
+    if (Object.prototype.hasOwnProperty.call(values, key)) return stringifyDocValue_(values[key]);
+
+    const deref = key.match(/^([^.[\]]+)\.([\s\S]+)$/);
+    if (deref) {
+      const row = getContextRow_(context, deref[1]);
+      if (row) return stringifyDocValue_(getField_(row, deref[2]));
+    }
+
+    return match;
+  });
+
+  return out;
+}
+
+function sectionsContainTemplateMarkers_(sections) {
+  return sections.some(section => textContainsTemplateMarker_(getSectionText_(section)));
+}
+
+function textContainsTemplateMarker_(text) {
+  const s = String(text || "");
+  return s.indexOf("<<") >= 0 || s.indexOf("{{") >= 0;
 }
 
 function getPrimaryDocumentSections_(doc) {
