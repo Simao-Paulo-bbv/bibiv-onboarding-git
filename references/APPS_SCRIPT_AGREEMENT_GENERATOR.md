@@ -41,6 +41,8 @@ processNextQueuedDocGenerationJob()
 
 The worker is created automatically by `ensureDocGenerationQueueTrigger()`. It uses a short one-shot trigger and then drains the queue within a safe runtime budget. A `Job_ID` is still processed in chunks controlled by `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN`, but continuation chunks for the same job are put back at the front of the queue and are picked up immediately by the same worker while time remains. If the worker yields while queue items remain, it refreshes the one-shot trigger before returning so the next queued `Job_ID` is not left in `Set Up`.
 
+The worker also has a per-job claim guard. If a duplicate trigger wakes while the same `Job_ID` is already being processed, it logs `DOCGEN_ALREADY_RUNNING` and exits cleanly instead of throwing a failed execution.
+
 Recommended AppSheet parameters:
 
 ```text
@@ -58,6 +60,15 @@ In `apps-script-docs-creator/00_Config.js`, set:
 ```javascript
 CONFIG.DOC_GENERATOR.OUTPUT_ROOT_FOLDER_ID = "1iHYmHQCpA4IHEfnjrV7okk3sqjw6MkOd"
 ```
+
+Current production toggles as of 2026-05-13:
+
+```javascript
+CONFIG.DOC_GENERATOR.USE_SHEET_READS = false;
+CONFIG.DOC_GENERATOR.USE_DOCS_API_PLACEHOLDER_REPLACEMENT = true;
+```
+
+`USE_SHEET_READS=false` is intentional. The generator reads production rows through AppSheet so AppSheet remains the source of workflow truth. The optional sheet-read path exists for diagnostics/manual helpers only.
 
 Use the Drive folder that contains the AppSheet file roots such as:
 
@@ -264,6 +275,13 @@ header
 footer
 ```
 
+Placeholder replacement is optimized in two layers:
+
+1. Preferred path: Google Docs API `documents.get` + `documents.batchUpdate` with `replaceAllText` requests. Success logs `DOCGEN_PLACEHOLDER_DOCS_API_PASS`.
+2. Fallback path: a fast `DocumentApp` text-node pass. It updates only text nodes containing `<<...>>` or `{{...}}`; if unresolved markers remain, it can still fall back to the older section-level replacement logic. This logs `DOCGEN_PLACEHOLDER_FAST_PASS`.
+
+The Docs API path is guarded. If Docs API is disabled or returns a non-success response, the run falls back to `DocumentApp` and still generates PDFs. After the first disabled-API response in one worker execution, Docs API is skipped for the remaining files in that run.
+
 Unsupported for now:
 
 ```text
@@ -294,6 +312,7 @@ The generator is queue-backed because Google Docs copy/edit/export is slower tha
 Current optimizations:
 
 - Read-heavy lookups for `Agreements_Files`, `BIBIV_onboarding_APP`, and `Doc_Templates` normally use AppSheet API. A disabled optional fast path (`CONFIG.DOC_GENERATOR.USE_SHEET_READS=false`) can read the underlying Google Sheet through the Google Sheets API, but it requires Sheets API to be enabled in the script's Cloud project. Writes always go through AppSheet API so data-change bots and AppSheet state remain authoritative.
+- Placeholder replacement normally uses Google Docs API. This requires the script to be attached to a standard Google Cloud project with Google Docs API enabled and OAuth consent configured. The combined manual authorization helper is `runAuthorizeDocGeneratorAllAccess()`.
 - AppSheet file-row events enqueue by `Job_ID`, not by individual PDF. Duplicate events for the same `Job_ID` log `added:false` and do not reset the one-shot trigger.
 - `Doc_Templates` rows and the main onboarding row are cached during one worker execution so continuation chunks do not refetch stable metadata.
 - Each chunk processes at most `CONFIG.DOC_GENERATOR.MAX_FILES_PER_RUN` files, currently `10`. The worker immediately continues with the same `Job_ID` while its runtime budget allows, and checks the time budget before starting another file so it can yield before timeout.
@@ -302,12 +321,50 @@ Current optimizations:
 - Successful files are batch-marked `Ready` after PDFs are created; the per-file `Generated` write is skipped in `generating_only` progress mode.
 - `Agreements_Files` and `Generation_Job_Items` final status updates are batched after PDFs are created.
 - Drive folder lookups are cached during one execution.
-- Placeholder replacement avoids scanning the document for fields that are not present in the template.
+- Placeholder replacement builds replacement requests only for markers found in the copied document. It avoids per-field full-document scans.
 - Timing logs named `DOCGEN_TIMING_*` identify whether slow runs are spending time in Drive copy, Docs open/save, placeholder replacement, PDF export, or file creation.
 - Working Google Docs copies are trashed after PDF export by default (`KEEP_WORKING_DOC_COPY=false`).
 - PDF export targets the first Google Docs tab by URL (`export?format=pdf&tab=...`) to avoid the Docs Tabs cover page.
 - Jobs are serialized through a script-property queue. Continuation for the active onboarding is prioritized ahead of later queued jobs so one NIP/Onboarding_ID can finish and send mail before the next starts.
 
-Observed production behavior on 2026-05-06: one 7-file agreement job usually takes about 2.5-4 minutes once the worker starts. Multiple NIPs queue correctly and are processed sequentially. The main latency outside the code is Apps Script's time-driven trigger startup, which can take roughly 1-2 minutes after the first enqueue.
+Observed production behavior:
 
-Remaining bottleneck: each PDF still requires a Google Docs template copy, text replacement, save, and PDF export. That is the slowest part and cannot be made instant without moving to pre-rendered/static PDFs, a lower-fidelity HTML/PDF renderer, or a larger external worker architecture.
+- 2026-05-06: one 7-file agreement job usually took about 2.5-4 minutes once the worker started. Multiple NIPs queued correctly and were processed sequentially.
+- 2026-05-13 before placeholder optimization: slow templates could spend 60-140 seconds in `DOCGEN_TIMING_REPLACE_PLACEHOLDERS`.
+- 2026-05-13 after the fast `DocumentApp` pass: placeholder replacement dropped to roughly 1-5 seconds per document when no fallback was needed.
+- 2026-05-13 after enabling Docs API in a standard Cloud project and fixing the tabbed-docs request: all files logged `DOCGEN_PLACEHOLDER_DOCS_API_PASS`; replacement stayed around 2-4.5 seconds per document, with no fallback.
+
+The main latency outside the code is Apps Script's time-driven trigger startup, which can take roughly 1-2 minutes after the first enqueue.
+
+Remaining bottlenecks: each PDF still requires a Google Docs template copy, Docs API replacement, PDF export, Drive file creation, and AppSheet status writes. Further optimization should focus on Drive/AppSheet I/O rather than placeholder replacement.
+
+## Manual maintenance helpers
+
+Manual helper functions live in `apps-script-docs-creator/14_Manual_Maintenance.js`.
+
+Authorization / setup:
+
+```text
+runAuthorizeDocGeneratorAllAccess()
+runAuthorizeDocGeneratorDocsApiAccess()
+runAuthorizeDocGeneratorSheetAccess()
+```
+
+Run `runAuthorizeDocGeneratorAllAccess()` after switching the Apps Script project to a standard Google Cloud project. It checks ScriptApp token access, UrlFetchApp, DriveApp, DocumentApp, SpreadsheetApp, and the Google Docs API REST endpoint. A successful run logs `DOCGEN_ALL_ACCESS_AUTHORIZATION_END` with `ok:true`.
+
+Manual one-off PDF generation:
+
+```text
+runManualGenerateTemplatePdfs()
+```
+
+Settings are at the top of `14_Manual_Maintenance.js` in `MANUAL_TEMPLATE_PDF_GENERATION`:
+
+```javascript
+ONBOARDING_IDS_TEXT: "ID00000001, ID00000003",
+ONBOARDING_IDS: ["ID00000005"],
+OUTPUT_FOLDER_ID: "Drive folder id",
+TEMPLATE_DOC_ID: "Google Docs template id"
+```
+
+The manual generator is intentionally separate from the main queue. It reads the same onboarding data, creates a dated output folder under the selected root using `YYYY-MM-DD__vN`, and uses the same PDF naming pattern as the main agreement flow.

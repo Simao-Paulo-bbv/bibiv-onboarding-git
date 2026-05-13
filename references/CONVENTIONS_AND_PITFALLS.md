@@ -56,6 +56,16 @@
 - The original direct-from-Doc_Templates copy. Caused empty NIPs and mixed records.
 - Delete it. Use the `Generation_Jobs` queue exclusively.
 
+### ❌ Do not switch the agreement generator back to sheet reads for production
+- `USE_SHEET_READS=false` is intentional. AppSheet is the safer production source for generation state.
+- Direct Google Sheet reads were tested, but they did not materially improve the long-running parts and introduced project/API authorization friction.
+- Manual helpers may use SpreadsheetApp, but the main queue should read workflow rows through AppSheet.
+
+### ❌ Do not assume Apps Script's default Cloud project can enable APIs
+- Spreadsheet-created Apps Script projects often use an invisible/default Google Cloud project.
+- If the Google Cloud Console shows "You need additional access" for a project number from Apps Script logs, create or use a standard GCP project instead.
+- Configure OAuth consent, enable required APIs, then switch Apps Script Project Settings to that standard project.
+
 ## DO
 
 ### ✅ Treat AppSheet "duplicate key" on People_List Add as success
@@ -86,6 +96,16 @@
 - REGON, VAT, and IBAN enrichment all go through `gov.api.hypnotype.com`.
 - Do not reintroduce direct MF or relay paths in the Apps Script.
 
+### ✅ Run the combined authorization check after changing Apps Script Cloud project
+- Use `runAuthorizeDocGeneratorAllAccess()` after switching to a standard GCP project.
+- It checks ScriptApp, UrlFetchApp, DriveApp, DocumentApp, SpreadsheetApp, and Google Docs API REST.
+- Expected success log: `DOCGEN_ALL_ACCESS_AUTHORIZATION_END` with `ok:true`.
+
+### ✅ Keep Google Docs API placeholder replacement enabled
+- `USE_DOCS_API_PLACEHOLDER_REPLACEMENT=true` is the current optimized path.
+- Success is visible as `DOCGEN_PLACEHOLDER_DOCS_API_PASS`.
+- If Docs API fails, the generator falls back to the fast `DocumentApp` text-node pass and should still finish safely.
+
 ## Recovery patterns
 
 ### "Old records re-imported after I deleted DEST rows"
@@ -107,6 +127,12 @@
 - Verify `File_status` transitions: `"Set Up"` → optional `"Generating"` → `"Ready"`.
 - Verify `Folder_Path` and `File` formula output — the most common silent failure is a missing `"/"`.
 - Do not switch AppSheet back to an inline generator function; inline generation caused canceled automation executions and partial row creation.
+
+### "Docs API placeholder replacement falls back"
+- Check the warning event `DOCGEN_PLACEHOLDER_DOCS_API_FALLBACK`.
+- If the error says `docs.googleapis.com` is disabled or `PERMISSION_DENIED`, the Apps Script project is not using a correctly configured standard GCP project or Google Docs API is not enabled.
+- If the error says "Field mask cannot retrieve document.tabs and legacy text-level fields", remove mixed legacy/tab fields from the Docs API field mask. Current code uses `?includeTabsContent=true` without a field mask.
+- If fallback is needed, `DOCGEN_PLACEHOLDER_FAST_PASS` should still appear and `fallback:false` means no unresolved markers remained.
 
 ### "Apps Script broke after I added a column in AppSheet"
 - Don't reorder DEST. Add the new column at the END of `DEST_SCHEMA` and `APPSHEET_SCHEMA`.

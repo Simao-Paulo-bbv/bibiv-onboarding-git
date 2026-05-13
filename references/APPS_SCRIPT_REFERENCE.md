@@ -23,6 +23,9 @@ The Apps Script source is clasp-managed. Push with `clasp push`.
   - `NIP_AS_NUMBER` — controls whether NIP/NIP_Control are sent as Number or String
   - `PENDING_SCAN_LAST_N = 5000` — fallback scan window for pending DEST rows
   - `BACKFILL_*` toggles in `12_Backfill_Existing.js` — turn off after backfill runs
+  - Docs Creator toggles in `apps-script-docs-creator/00_Config.js`:
+    - `USE_SHEET_READS=false` — production generator reads through AppSheet, not directly from the Google Sheet.
+    - `USE_DOCS_API_PLACEHOLDER_REPLACEMENT=true` — placeholder replacement uses Google Docs API first, with `DocumentApp` fallback.
 
 ### `01_Entry.js`
 - `runSyncAndProcess()` — entrypoint. Acquires lock, opens sheets, runs `importFromSource_`, then processes freshly imported rows. Falls back to `processPendingDestRows_` over the last N rows.
@@ -102,6 +105,24 @@ Critical guards:
 ### `12_Backfill_Existing.js`
 - One-shot enrichment for legacy rows. Only fills blanks. Does **not** touch `Status`.
 - Toggle off after run.
+
+### `apps-script-docs-creator/13_Docs_Generator.js`
+- Standalone agreement PDF generator called by AppSheet through `generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId)`.
+- AppSheet call only enqueues; `processNextQueuedDocGenerationJob()` does the real work from a time-driven worker.
+- Queue dedupes by `Job_ID`. Duplicate calls for the same job log `added:false`.
+- Per-job claim guard logs `DOCGEN_ALREADY_RUNNING` and exits cleanly if a duplicate worker wakes for the same job.
+- Production data reads are through AppSheet API. The optional Google Sheet read path remains behind `USE_SHEET_READS=false`.
+- Placeholder replacement path:
+  1. Google Docs API `documents.get` + `documents.batchUpdate` `replaceAllText`; logs `DOCGEN_PLACEHOLDER_DOCS_API_PASS`.
+  2. Fast `DocumentApp` text-node fallback; logs `DOCGEN_PLACEHOLDER_FAST_PASS`.
+  3. Older section-level fallback only if markers remain after the fast pass.
+- If Docs API is disabled or errors, generation continues with `DocumentApp`; no PDF should be emitted with unresolved placeholders.
+
+### `apps-script-docs-creator/14_Manual_Maintenance.js`
+- `runAuthorizeDocGeneratorAllAccess()` — one-stop authorization/preflight check after switching Apps Script to a standard Google Cloud project.
+- `runAuthorizeDocGeneratorDocsApiAccess()` — checks Google Docs API access with a temporary document.
+- `runAuthorizeDocGeneratorSheetAccess()` — checks SpreadsheetApp access to the main onboarding sheet.
+- `runManualGenerateTemplatePdfs()` — manual one-off PDF generator for selected `Onboarding_ID` values, selected output folder, and selected template doc. Creates dated subfolders `YYYY-MM-DD__vN` and uses the same naming pattern as the main flow.
 
 ## Critical invariants
 
