@@ -690,19 +690,25 @@ function generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow, o
     agreementFileId: getField_(fileRow, "ID"),
     templateId: templateId
   }, () => sourceFile.makeCopy(docName, workingFolder));
+
+  const placeholdersReplacedByApi = timeDocgenStep_(runId, "DOCGEN_TIMING_REPLACE_PLACEHOLDERS", {
+    agreementFileId: getField_(fileRow, "ID")
+  }, () => replaceTemplatePlaceholdersForCopiedDoc_(runId, docCopy.getId(), mainRow, fileRow, templateRow));
   const doc = timeDocgenStep_(runId, "DOCGEN_TIMING_OPEN_DOC", {
     agreementFileId: getField_(fileRow, "ID")
   }, () => DocumentApp.openById(docCopy.getId()));
-
-  timeDocgenStep_(runId, "DOCGEN_TIMING_REPLACE_PLACEHOLDERS", {
-    agreementFileId: getField_(fileRow, "ID")
-  }, () => replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow, runId));
   const exportTabId = timeDocgenStep_(runId, "DOCGEN_TIMING_GET_TAB", {
     agreementFileId: getField_(fileRow, "ID")
   }, () => getFirstDocumentTabId_(doc));
-  timeDocgenStep_(runId, "DOCGEN_TIMING_SAVE_DOC", {
-    agreementFileId: getField_(fileRow, "ID")
-  }, () => doc.saveAndClose());
+  if (placeholdersReplacedByApi) {
+    timeDocgenStep_(runId, "DOCGEN_TIMING_CLOSE_DOC", {
+      agreementFileId: getField_(fileRow, "ID")
+    }, () => doc.saveAndClose());
+  } else {
+    timeDocgenStep_(runId, "DOCGEN_TIMING_SAVE_DOC", {
+      agreementFileId: getField_(fileRow, "ID")
+    }, () => doc.saveAndClose());
+  }
 
   const pdfBlob = timeDocgenStep_(runId, "DOCGEN_TIMING_EXPORT_PDF", {
     agreementFileId: getField_(fileRow, "ID")
@@ -743,6 +749,179 @@ function timeDocgenStep_(runId, eventName, data, fn) {
     const payload = data || {};
     payload.durationMs = Date.now() - startedAt;
     log_(runId, "INFO", eventName, payload);
+  }
+}
+
+function replaceTemplatePlaceholdersForCopiedDoc_(runId, docId, mainRow, fileRow, templateRow) {
+  if (CONFIG.DOC_GENERATOR.USE_DOCS_API_PLACEHOLDER_REPLACEMENT !== false) {
+    try {
+      const replaced = replaceTemplatePlaceholdersWithDocsApi_(runId, docId, mainRow, fileRow, templateRow);
+      if (replaced) return true;
+    } catch (e) {
+      log_(runId, "WARN", "DOCGEN_PLACEHOLDER_DOCS_API_FALLBACK", {
+        docId: docId,
+        error: e && e.message || String(e)
+      });
+    }
+  }
+
+  const doc = DocumentApp.openById(docId);
+  replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow, runId);
+  doc.saveAndClose();
+  return false;
+}
+
+function replaceTemplatePlaceholdersWithDocsApi_(runId, docId, mainRow, fileRow, templateRow) {
+  const values = {};
+  addReplacementValues_(values, mainRow, "");
+  addReplacementValues_(values, fileRow, "File.");
+  addReplacementValues_(values, templateRow, "Template.");
+
+  const context = {
+    Onboarding_ID: mainRow,
+    Template_ID_Reference: templateRow,
+    Template_ID: templateRow,
+    File: fileRow
+  };
+
+  const docText = fetchGoogleDocText_(docId);
+  if (!textContainsTemplateMarker_(docText)) {
+    throw new Error("Docs API text read did not find template markers; using DocumentApp fallback.");
+  }
+
+  const replacements = buildTemplatePlaceholderReplacements_(docText, context, values);
+  const markers = Object.keys(replacements);
+  if (!markers.length) {
+    throw new Error("Docs API did not build replacement requests; using DocumentApp fallback.");
+  }
+
+  const requests = markers.map(marker => ({
+    replaceAllText: {
+      containsText: {
+        text: marker,
+        matchCase: true
+      },
+      replaceText: replacements[marker]
+    }
+  }));
+
+  batchUpdateGoogleDoc_(docId, requests);
+  const remainingText = fetchGoogleDocText_(docId);
+  if (textContainsTemplateMarker_(remainingText)) {
+    throw new Error("Docs API replacement left template markers; using DocumentApp fallback.");
+  }
+
+  log_(runId, "INFO", "DOCGEN_PLACEHOLDER_DOCS_API_PASS", {
+    markers: markers.length,
+    requests: requests.length,
+    fallback: false
+  });
+  return true;
+}
+
+function fetchGoogleDocText_(docId) {
+  const url = "https://docs.googleapis.com/v1/documents/" + encodeURIComponent(docId) +
+    "?includeTabsContent=true&fields=body,headers,footers,tabs";
+  const response = UrlFetchApp.fetch(url, {
+    method: "get",
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw new Error("Docs API get failed for " + docId + " httpCode=" + code + " body=" + response.getContentText().slice(0, 500));
+  }
+
+  const doc = safeJsonParse_(response.getContentText()) || {};
+  const chunks = [];
+  collectGoogleDocTextRuns_(doc, chunks);
+  return chunks.join("");
+}
+
+function collectGoogleDocTextRuns_(value, out) {
+  if (value == null) return;
+  if (Array.isArray(value)) {
+    value.forEach(item => collectGoogleDocTextRuns_(item, out));
+    return;
+  }
+  if (typeof value !== "object") return;
+  if (value.textRun && typeof value.textRun.content === "string") {
+    out.push(value.textRun.content);
+  }
+  Object.keys(value).forEach(key => collectGoogleDocTextRuns_(value[key], out));
+}
+
+function buildTemplatePlaceholderReplacements_(docText, context, values) {
+  const replacements = {};
+  const text = String(docText || "");
+
+  const angleMatches = text.match(/<<[\s\S]*?>>/g) || [];
+  angleMatches.forEach(match => {
+    const replacement = evaluateTemplateAnglePlaceholder_(match, context, values);
+    if (replacement == null || replacement === match) return;
+    replacements[match] = replacement;
+  });
+
+  const curlyMatches = text.match(/\{\{([^{}]+)\}\}/g) || [];
+  curlyMatches.forEach(match => {
+    const replacement = evaluateTemplateCurlyPlaceholder_(match, context, values);
+    if (replacement == null || replacement === match) return;
+    replacements[match] = replacement;
+  });
+
+  return replacements;
+}
+
+function evaluateTemplateAnglePlaceholder_(match, context, values) {
+  if (/^<<\s*IF\(/i.test(match)) {
+    const replacement = evaluateAppSheetIfExpression_(match, context);
+    return replacement == null ? null : stringifyDocValue_(replacement);
+  }
+
+  const known = evaluateKnownAppSheetExpression_(match, context);
+  if (known != null) return stringifyDocValue_(known);
+
+  if (/^<<\s*\[[^\]]+\]\.(?:\[[^\]]+\]|[^<>]+?)\s*>>$/.test(match)) {
+    return stringifyDocValue_(resolveAppSheetValue_(match, context));
+  }
+
+  const simple = match.match(/^<<\s*\[([^\]]+)\]\s*>>$/);
+  if (simple) {
+    const field = simple[1];
+    const direct = values[field];
+    return stringifyDocValue_(direct != null ? direct : resolveAppSheetValue_("[" + field + "]", context));
+  }
+
+  return null;
+}
+
+function evaluateTemplateCurlyPlaceholder_(match, context, values) {
+  const raw = String(match || "").replace(/^\{\{/, "").replace(/\}\}$/, "");
+  const key = raw.trim();
+  if (!key) return null;
+  if (Object.prototype.hasOwnProperty.call(values, key)) return stringifyDocValue_(values[key]);
+
+  const deref = key.match(/^([^.[\]]+)\.([\s\S]+)$/);
+  if (deref) {
+    const row = getContextRow_(context, deref[1]);
+    if (row) return stringifyDocValue_(getField_(row, deref[2]));
+  }
+
+  return null;
+}
+
+function batchUpdateGoogleDoc_(docId, requests) {
+  const url = "https://docs.googleapis.com/v1/documents/" + encodeURIComponent(docId) + ":batchUpdate";
+  const response = UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    payload: JSON.stringify({ requests: requests || [] }),
+    muteHttpExceptions: true
+  });
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw new Error("Docs API batchUpdate failed for " + docId + " httpCode=" + code + " body=" + response.getContentText().slice(0, 500));
   }
 }
 
