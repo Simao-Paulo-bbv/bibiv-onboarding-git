@@ -18,7 +18,8 @@ const DOCGEN_RUNTIME_CACHE = {
   folderByPath: {},
   sheetValuesByName: {},
   mainRowsById: {},
-  templateRowsById: {}
+  templateRowsById: {},
+  docsApiPlaceholderReplacementAvailable: true
 };
 
 function generateAgreementFilesFromAppSheet(onboardingId, jobId, agreementFileId) {
@@ -753,13 +754,18 @@ function timeDocgenStep_(runId, eventName, data, fn) {
 }
 
 function replaceTemplatePlaceholdersForCopiedDoc_(runId, docId, mainRow, fileRow, templateRow) {
-  if (CONFIG.DOC_GENERATOR.USE_DOCS_API_PLACEHOLDER_REPLACEMENT !== false) {
+  if (CONFIG.DOC_GENERATOR.USE_DOCS_API_PLACEHOLDER_REPLACEMENT !== false &&
+      DOCGEN_RUNTIME_CACHE.docsApiPlaceholderReplacementAvailable !== false) {
     try {
       const replaced = replaceTemplatePlaceholdersWithDocsApi_(runId, docId, mainRow, fileRow, templateRow);
       if (replaced) return true;
     } catch (e) {
+      if (isDocsApiDisabledError_(e)) {
+        DOCGEN_RUNTIME_CACHE.docsApiPlaceholderReplacementAvailable = false;
+      }
       log_(runId, "WARN", "DOCGEN_PLACEHOLDER_DOCS_API_FALLBACK", {
         docId: docId,
+        disabledForRun: DOCGEN_RUNTIME_CACHE.docsApiPlaceholderReplacementAvailable === false,
         error: e && e.message || String(e)
       });
     }
@@ -769,6 +775,12 @@ function replaceTemplatePlaceholdersForCopiedDoc_(runId, docId, mainRow, fileRow
   replaceTemplatePlaceholders_(doc, mainRow, fileRow, templateRow, runId);
   doc.saveAndClose();
   return false;
+}
+
+function isDocsApiDisabledError_(error) {
+  const message = error && error.message || String(error || "");
+  return message.indexOf("docs.googleapis.com") >= 0 &&
+    (message.indexOf("httpCode=403") >= 0 || message.indexOf("PERMISSION_DENIED") >= 0);
 }
 
 function replaceTemplatePlaceholdersWithDocsApi_(runId, docId, mainRow, fileRow, templateRow) {
