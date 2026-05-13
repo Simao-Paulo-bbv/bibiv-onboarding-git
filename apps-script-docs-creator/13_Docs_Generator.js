@@ -833,7 +833,7 @@ function replaceTemplatePlaceholdersWithDocsApi_(runId, docId, mainRow, fileRow,
 
 function fetchGoogleDocText_(docId) {
   const url = "https://docs.googleapis.com/v1/documents/" + encodeURIComponent(docId) +
-    "?includeTabsContent=true&fields=body,headers,footers,tabs";
+    "?includeTabsContent=true";
   const response = UrlFetchApp.fetch(url, {
     method: "get",
     headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
