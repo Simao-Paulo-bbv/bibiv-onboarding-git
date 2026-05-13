@@ -9,6 +9,33 @@ const MANUAL_TEMPLATE_PDF_GENERATION = {
   TEMPLATE_DOC_ID: ""
 };
 
+function runAuthorizeDocGeneratorSheetAccess() {
+  const runId = makeRunId_();
+  const spreadsheetId = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
+  if (!spreadsheetId) throw new Error("CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID is blank.");
+
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  const sheetName = getSheetNameForDocgenTable_(DOCGEN_TABLES.MAIN);
+  const sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) throw new Error("Sheet not found: " + sheetName);
+
+  const sample = sheet.getLastRow() && sheet.getLastColumn()
+    ? sheet.getRange(1, 1, 1, Math.min(sheet.getLastColumn(), 5)).getValues()[0]
+    : [];
+  log_(runId, "INFO", "DOCGEN_SHEET_ACCESS_AUTHORIZED", {
+    spreadsheetId: spreadsheetId,
+    spreadsheetName: spreadsheet.getName(),
+    sheetName: sheetName,
+    sampleCols: sample.length
+  });
+  return {
+    ok: true,
+    spreadsheetId: spreadsheetId,
+    spreadsheetName: spreadsheet.getName(),
+    sheetName: sheetName
+  };
+}
+
 function runManualGenerateTemplatePdfs() {
   const runId = makeRunId_();
   const settings = getManualTemplatePdfGenerationSettings_();

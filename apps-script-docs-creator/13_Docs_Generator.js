@@ -66,6 +66,14 @@ function processQueuedDocGenerationJobs_(options) {
       }
 
       claimKey = claimDocGenerationJob_(runId, args);
+      if (!claimKey) {
+        return {
+          ok: true,
+          alreadyRunning: true,
+          processedJobs: workerResults.length,
+          results: workerResults
+        };
+      }
       let result;
       try {
         result = processDocGenerationJob_(runId, args, workerStartedAt, options);
@@ -271,7 +279,7 @@ function claimDocGenerationJob_(runId, args) {
     const cache = CacheService.getScriptCache();
     if (cache.get(key)) {
       log_(runId, "INFO", "DOCGEN_ALREADY_RUNNING", { key: key });
-      throw new Error("Document generation already running for this job.");
+      return "";
     }
     cache.put(key, "1", CONFIG.DOC_GENERATOR.JOB_CLAIM_TTL_SECONDS || 900);
     return key;
@@ -594,48 +602,38 @@ function fetchDocGeneratorSheetValues_(runId, sheetName) {
   const id = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
   if (!id) return [];
 
-  const range = quoteSheetNameForA1_(cleanSheetName) + "!A:ZZ";
-  const url = "https://sheets.googleapis.com/v4/spreadsheets/" + encodeURIComponent(id) +
-    "/values/" + encodeURIComponent(range) +
-    "?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING";
-  const response = UrlFetchApp.fetch(url, {
-    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true
-  });
+  const spreadsheet = SpreadsheetApp.openById(id);
+  const sheet = spreadsheet.getSheetByName(cleanSheetName);
+  if (!sheet) throw new Error("Sheet not found: " + cleanSheetName);
 
-  const code = response.getResponseCode();
-  const text = response.getContentText() || "";
-  if (code !== 200) {
-    throw new Error("Sheets API read failed for " + cleanSheetName + " httpCode=" + code + " body=" + text.slice(0, 500));
-  }
-
-  const parsed = safeJsonParse_(text) || {};
-  const values = parsed.values || [];
+  const lastRow = sheet.getLastRow();
+  const lastColumn = sheet.getLastColumn();
+  const values = lastRow && lastColumn
+    ? sheet.getRange(1, 1, lastRow, lastColumn).getValues()
+    : [];
   DOCGEN_RUNTIME_CACHE.sheetValuesByName[cleanSheetName] = values;
-  log_(runId, "INFO", "DOCGEN_SHEETS_API_READ", { sheetName: cleanSheetName, rows: values.length });
+  log_(runId, "INFO", "DOCGEN_SPREADSHEET_READ", {
+    sheetName: cleanSheetName,
+    rows: values.length,
+    cols: lastColumn
+  });
   return values;
 }
 
 function fetchDocGeneratorSpreadsheetMetadata_(runId) {
   const id = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
   if (!id) return null;
-  const url = "https://sheets.googleapis.com/v4/spreadsheets/" + encodeURIComponent(id) +
-    "?fields=properties.title,sheets.properties.title";
-  const response = UrlFetchApp.fetch(url, {
-    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true
-  });
-
-  const code = response.getResponseCode();
-  const text = response.getContentText() || "";
-  if (code !== 200) {
-    throw new Error("Sheets API metadata read failed httpCode=" + code + " body=" + text.slice(0, 500));
-  }
-
-  const parsed = safeJsonParse_(text) || {};
-  log_(runId, "INFO", "DOCGEN_SHEETS_API_METADATA_READ", {
-    title: parsed.properties && parsed.properties.title || "",
-    sheets: (parsed.sheets || []).length
+  const spreadsheet = SpreadsheetApp.openById(id);
+  const sheets = spreadsheet.getSheets().map(sheet => ({
+    properties: { title: sheet.getName() }
+  }));
+  const parsed = {
+    properties: { title: spreadsheet.getName() },
+    sheets: sheets
+  };
+  log_(runId, "INFO", "DOCGEN_SPREADSHEET_METADATA_READ", {
+    title: parsed.properties.title,
+    sheets: sheets.length
   });
   return parsed;
 }
