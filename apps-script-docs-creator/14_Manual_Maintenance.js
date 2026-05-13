@@ -90,6 +90,86 @@ function runAuthorizeDocGeneratorDocsApiAccess() {
   }
 }
 
+function runAuthorizeDocGeneratorAllAccess() {
+  const runId = makeRunId_();
+  const checks = [];
+
+  checks.push(runAuthorizationCheck_(runId, "script", () => {
+    return {
+      tokenLength: String(ScriptApp.getOAuthToken() || "").length
+    };
+  }));
+
+  checks.push(runAuthorizationCheck_(runId, "external_request", () => {
+    const response = UrlFetchApp.fetch("https://www.googleapis.com/discovery/v1/apis/docs/v1/rest", {
+      muteHttpExceptions: true
+    });
+    return {
+      httpCode: response.getResponseCode()
+    };
+  }));
+
+  checks.push(runAuthorizationCheck_(runId, "drive", () => {
+    const root = DriveApp.getFolderById(CONFIG.DOC_GENERATOR.OUTPUT_ROOT_FOLDER_ID);
+    return {
+      outputRootFolderId: root.getId(),
+      outputRootFolderName: root.getName()
+    };
+  }));
+
+  checks.push(runAuthorizationCheck_(runId, "documents", () => {
+    const doc = DocumentApp.create("DOCGEN DocumentApp authorization check");
+    const docId = doc.getId();
+    doc.getBody().appendParagraph("DOCGEN_DOCUMENT_APP_AUTH_CHECK");
+    doc.saveAndClose();
+    DriveApp.getFileById(docId).setTrashed(true);
+    return {
+      docId: docId
+    };
+  }));
+
+  checks.push(runAuthorizationCheck_(runId, "spreadsheets", () => runAuthorizeDocGeneratorSheetAccess()));
+  checks.push(runAuthorizationCheck_(runId, "docs_api", () => runAuthorizeDocGeneratorDocsApiAccess()));
+
+  const failed = checks.filter(check => !check.ok);
+  log_(runId, failed.length ? "ERROR" : "INFO", "DOCGEN_ALL_ACCESS_AUTHORIZATION_END", {
+    ok: failed.length === 0,
+    total: checks.length,
+    failed: failed.length,
+    checks: checks
+  });
+
+  if (failed.length) {
+    throw new Error("Doc generator authorization checks failed: " + failed.map(check => check.name).join(", "));
+  }
+
+  return {
+    ok: true,
+    checks: checks
+  };
+}
+
+function runAuthorizationCheck_(runId, name, fn) {
+  try {
+    const result = fn();
+    const check = {
+      name: name,
+      ok: true,
+      result: result || {}
+    };
+    log_(runId, "INFO", "DOCGEN_AUTHORIZATION_CHECK_OK", check);
+    return check;
+  } catch (e) {
+    const check = {
+      name: name,
+      ok: false,
+      error: e && e.message || String(e)
+    };
+    log_(runId, "ERROR", "DOCGEN_AUTHORIZATION_CHECK_FAILED", check);
+    return check;
+  }
+}
+
 function runManualGenerateTemplatePdfs() {
   const runId = makeRunId_();
   const settings = getManualTemplatePdfGenerationSettings_();
