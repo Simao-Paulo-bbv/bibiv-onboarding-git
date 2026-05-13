@@ -10,7 +10,7 @@ const CONFIG = {
   DOC_GENERATOR: {
     OUTPUT_ROOT_FOLDER_ID: "1iHYmHQCpA4IHEfnjrV7okk3sqjw6MkOd",
     DATA_SPREADSHEET_ID: "1EaefdCq8vT6QZO6fxazxGZXBiReR1Y7zZ4FA7tdwebA",
-    USE_SHEET_READS: true,
+    USE_SHEET_READS: false,
     TABLE_SHEET_NAMES: {
       BIBIV_onboarding_APP: "Sheet1",
       Agreements_Files: "Agreements_Files",
