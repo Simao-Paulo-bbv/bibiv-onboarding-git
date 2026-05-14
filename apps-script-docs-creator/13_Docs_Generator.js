@@ -133,6 +133,17 @@ function processDocGenerationJob_(runId, args, workerStartedAt, options) {
 
   const files = findPendingAgreementFileRows_(runId, args);
   if (!files.length) {
+    if (args && args.jobId) {
+      log_(runId, "INFO", "DOCGEN_NO_PENDING_FILES_FINALIZING", args);
+      finishMainRowsWhenAllAgreementsReady_(runId, [], args, []);
+      log_(runId, "INFO", "DOCGEN_DONE", {
+        processed: 0,
+        failed: 0,
+        finalizationOnly: true,
+        durationMs: Date.now() - jobStartedAt
+      });
+      return { ok: true, processed: 0, finalizationOnly: true, message: "No pending files; finalization checked." };
+    }
     log_(runId, "INFO", "DOCGEN_NO_PENDING_FILES", args);
     return { ok: true, processed: 0, message: "No pending Agreement files." };
   }
@@ -404,6 +415,54 @@ function requeueDocGenerationJobAfterFailure_(runId, args, err) {
     });
   } catch (requeueErr) {
     log_(runId, "ERROR", "DOCGEN_JOB_REQUEUE_FAILED", {
+      jobId: args && args.jobId || "",
+      error: String(requeueErr && requeueErr.message || requeueErr).slice(0, 900)
+    });
+  }
+}
+
+function requeueDocGenerationFinalization_(runId, args, err) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const queue = readDocGenerationQueue_(props);
+    const key = args.jobId || args.agreementFileId || args.onboardingId;
+    const retryCount = Number(args.finalizationRetryCount || 0) + 1;
+    const maxRetries = Number(CONFIG.DOC_GENERATOR.JOB_REQUEUE_MAX_RETRIES || 3);
+    const error = String(err && err.message || err).slice(0, 900);
+    if (retryCount > maxRetries) {
+      log_(runId, "ERROR", "DOCGEN_FINALIZATION_REQUEUE_LIMIT_REACHED", {
+        jobId: args.jobId || "",
+        onboardingId: args.onboardingId || "",
+        retryCount: retryCount,
+        error: error
+      });
+      return;
+    }
+
+    const exists = queue.some(item => (item.jobId || item.agreementFileId || item.onboardingId) === key);
+    if (!exists) {
+      queue.unshift({
+        onboardingId: args.onboardingId,
+        jobId: args.jobId,
+        agreementFileId: args.agreementFileId,
+        queuedAt: new Date().toISOString(),
+        continuation: true,
+        finalizationOnly: true,
+        finalizationRetryCount: retryCount,
+        retryAfterError: error.slice(0, 300)
+      });
+      writeDocGenerationQueue_(props, queue);
+    }
+    ensureDocGenerationQueueTrigger({ refresh: true });
+    log_(runId, "WARN", "DOCGEN_FINALIZATION_REQUEUED_AFTER_ERROR", {
+      jobId: args.jobId || "",
+      onboardingId: args.onboardingId || "",
+      retryCount: retryCount,
+      queued: !exists,
+      error: error
+    });
+  } catch (requeueErr) {
+    log_(runId, "ERROR", "DOCGEN_FINALIZATION_REQUEUE_FAILED", {
       jobId: args && args.jobId || "",
       error: String(requeueErr && requeueErr.message || requeueErr).slice(0, 900)
     });
@@ -1825,10 +1884,28 @@ function finishMainRowWhenJobAgreementFilesReady_(runId, args, readyFileUpdates)
     return;
   }
 
-  callAppSheet_(runId, DOCGEN_TABLES.MAIN, {
-    ID: onboardingId,
-    Status: CONFIG.DOC_GENERATOR.MAIN_STATUS_AGREEMENTS_GENERATED
-  }, CONFIG.APPSHEET_ACTION_EDIT, onboardingId);
+  try {
+    callAppSheet_(runId, DOCGEN_TABLES.MAIN, {
+      ID: onboardingId,
+      Status: CONFIG.DOC_GENERATOR.MAIN_STATUS_AGREEMENTS_GENERATED
+    }, CONFIG.APPSHEET_ACTION_EDIT, onboardingId);
+    log_(runId, "INFO", "DOCGEN_MAIN_ROW_MARKED_AGREEMENTS_GENERATED", {
+      jobId: jobId,
+      onboardingId: onboardingId
+    });
+  } catch (err) {
+    log_(runId, "WARN", "DOCGEN_MAIN_ROW_STATUS_UPDATE_FAILED", {
+      jobId: jobId,
+      onboardingId: onboardingId,
+      error: String(err && err.message || err).slice(0, 900)
+    });
+    requeueDocGenerationFinalization_(runId, {
+      onboardingId: onboardingId,
+      jobId: jobId,
+      agreementFileId: args && args.agreementFileId || "",
+      finalizationRetryCount: args && args.finalizationRetryCount || 0
+    }, err);
+  }
 }
 
 function buildRelativeFilePathFromRow_(fileRow) {
