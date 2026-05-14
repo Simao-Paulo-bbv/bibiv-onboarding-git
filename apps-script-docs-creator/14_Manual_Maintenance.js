@@ -15,6 +15,13 @@ const MANUAL_DOCGEN_REQUEUE = {
   AGREEMENT_FILE_ID: ""
 };
 
+const MANUAL_SEND_AGREEMENTS_RETRY = {
+  ONBOARDING_ID: "",
+  RESET_STATUS: "In progress",
+  GENERATED_STATUS: "Agreements Generated",
+  PAUSE_MS: 1500
+};
+
 function runAuthorizeDocGeneratorSheetAccess() {
   const runId = makeRunId_();
   const spreadsheetId = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
@@ -173,6 +180,55 @@ function runManualRequeueDocGenerationJob() {
     added: Boolean(result && result.added),
     queueSize: result && result.size || 0,
     args: args
+  };
+}
+
+function runManualRetrySendAgreementsBot() {
+  const runId = makeRunId_();
+  const onboardingId = String(MANUAL_SEND_AGREEMENTS_RETRY.ONBOARDING_ID || "").trim();
+  const resetStatus = String(MANUAL_SEND_AGREEMENTS_RETRY.RESET_STATUS || "In progress").trim();
+  const generatedStatus = String(
+    MANUAL_SEND_AGREEMENTS_RETRY.GENERATED_STATUS ||
+    CONFIG.DOC_GENERATOR.MAIN_STATUS_AGREEMENTS_GENERATED
+  ).trim();
+  const pauseMs = Math.max(0, Number(MANUAL_SEND_AGREEMENTS_RETRY.PAUSE_MS || 0));
+
+  if (!onboardingId) throw new Error("MANUAL_SEND_AGREEMENTS_RETRY.ONBOARDING_ID is blank.");
+  if (!resetStatus) throw new Error("MANUAL_SEND_AGREEMENTS_RETRY.RESET_STATUS is blank.");
+  if (!generatedStatus) throw new Error("MANUAL_SEND_AGREEMENTS_RETRY.GENERATED_STATUS is blank.");
+  if (resetStatus === generatedStatus) {
+    throw new Error("RESET_STATUS must differ from GENERATED_STATUS to trigger AppSheet automation.");
+  }
+
+  log_(runId, "INFO", "MANUAL_SEND_AGREEMENTS_RETRY_START", {
+    onboardingId: onboardingId,
+    resetStatus: resetStatus,
+    generatedStatus: generatedStatus
+  });
+
+  callAppSheet_(runId, DOCGEN_TABLES.MAIN, {
+    ID: onboardingId,
+    Status: resetStatus
+  }, CONFIG.APPSHEET_ACTION_EDIT, onboardingId);
+
+  if (pauseMs) Utilities.sleep(pauseMs);
+
+  callAppSheet_(runId, DOCGEN_TABLES.MAIN, {
+    ID: onboardingId,
+    Status: generatedStatus
+  }, CONFIG.APPSHEET_ACTION_EDIT, onboardingId);
+
+  log_(runId, "INFO", "MANUAL_SEND_AGREEMENTS_RETRY_DONE", {
+    onboardingId: onboardingId,
+    resetStatus: resetStatus,
+    generatedStatus: generatedStatus
+  });
+
+  return {
+    ok: true,
+    onboardingId: onboardingId,
+    resetStatus: resetStatus,
+    generatedStatus: generatedStatus
   };
 }
 
