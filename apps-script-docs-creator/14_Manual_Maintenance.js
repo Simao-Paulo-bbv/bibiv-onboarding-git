@@ -9,6 +9,12 @@ const MANUAL_TEMPLATE_PDF_GENERATION = {
   TEMPLATE_DOC_ID: ""
 };
 
+const MANUAL_DOCGEN_REQUEUE = {
+  ONBOARDING_ID: "",
+  JOB_ID: "",
+  AGREEMENT_FILE_ID: ""
+};
+
 function runAuthorizeDocGeneratorSheetAccess() {
   const runId = makeRunId_();
   const spreadsheetId = String(CONFIG.DOC_GENERATOR.DATA_SPREADSHEET_ID || "").trim();
@@ -146,6 +152,44 @@ function runAuthorizeDocGeneratorAllAccess() {
   return {
     ok: true,
     checks: checks
+  };
+}
+
+function runManualRequeueDocGenerationJob() {
+  const runId = makeRunId_();
+  const args = getManualDocgenRequeueSettings_();
+  const result = enqueueDocGenerationJob_(runId, args, { front: true, continuation: true });
+  ensureDocGenerationQueueTrigger({ refresh: true });
+  log_(runId, "INFO", "MANUAL_DOCGEN_JOB_REQUEUED", {
+    onboardingId: args.onboardingId,
+    jobId: args.jobId,
+    agreementFileId: args.agreementFileId,
+    added: Boolean(result && result.added),
+    queueSize: result && result.size || ""
+  });
+  return {
+    ok: true,
+    queued: true,
+    added: Boolean(result && result.added),
+    queueSize: result && result.size || 0,
+    args: args
+  };
+}
+
+function getManualDocgenRequeueSettings_() {
+  const onboardingId = String(MANUAL_DOCGEN_REQUEUE.ONBOARDING_ID || "").trim();
+  const jobId = String(MANUAL_DOCGEN_REQUEUE.JOB_ID || "").trim();
+  const agreementFileId = String(MANUAL_DOCGEN_REQUEUE.AGREEMENT_FILE_ID || "").trim();
+
+  if (!onboardingId) throw new Error("MANUAL_DOCGEN_REQUEUE.ONBOARDING_ID is blank.");
+  if (!jobId && !agreementFileId) {
+    throw new Error("Set MANUAL_DOCGEN_REQUEUE.JOB_ID or AGREEMENT_FILE_ID.");
+  }
+
+  return {
+    onboardingId: onboardingId,
+    jobId: jobId,
+    agreementFileId: agreementFileId
   };
 }
 
