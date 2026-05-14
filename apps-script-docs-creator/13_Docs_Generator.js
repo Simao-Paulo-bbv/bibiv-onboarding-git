@@ -68,9 +68,17 @@ function processQueuedDocGenerationJobs_(options) {
 
       claimKey = claimDocGenerationJob_(runId, args);
       if (!claimKey) {
+        enqueueDocGenerationJob_(runId, args, { front: true, continuation: true });
+        ensureDocGenerationQueueTrigger({ refresh: true });
+        log_(runId, "INFO", "DOCGEN_ALREADY_RUNNING_REQUEUED", {
+          jobId: args.jobId || "",
+          onboardingId: args.onboardingId || "",
+          agreementFileId: args.agreementFileId || ""
+        });
         return {
           ok: true,
           alreadyRunning: true,
+          queued: true,
           processedJobs: workerResults.length,
           results: workerResults
         };
@@ -1734,7 +1742,7 @@ function makeShortId_() {
 
 function finishMainRowsWhenAllAgreementsReady_(runId, processedFiles, args, readyFileUpdates) {
   if (args.jobId) {
-    finishMainRowWhenJobAgreementFilesReady_(runId, args.jobId, args.onboardingId, readyFileUpdates);
+    finishMainRowWhenJobAgreementFilesReady_(runId, args, readyFileUpdates);
     return;
   }
 
@@ -1760,7 +1768,9 @@ function finishMainRowsWhenAllAgreementsReady_(runId, processedFiles, args, read
   });
 }
 
-function finishMainRowWhenJobAgreementFilesReady_(runId, jobId, fallbackOnboardingId, readyFileUpdates) {
+function finishMainRowWhenJobAgreementFilesReady_(runId, args, readyFileUpdates) {
+  const jobId = args && args.jobId || "";
+  const fallbackOnboardingId = args && args.onboardingId || "";
   const itemSelector = 'FILTER("' + DOCGEN_TABLES.GENERATION_JOB_ITEMS + '", [Job_ID] = ' + appSheetQuote_(jobId) + ")";
   const items = callAppSheetFind_(runId, DOCGEN_TABLES.GENERATION_JOB_ITEMS, itemSelector);
   if (!items.length) {
@@ -1791,6 +1801,18 @@ function finishMainRowWhenJobAgreementFilesReady_(runId, jobId, fallbackOnboardi
   if (readyCount < items.length) {
     log_(runId, "INFO", "DOCGEN_JOB_NOT_COMPLETE", {
       jobId: jobId,
+      expectedItems: items.length,
+      readyFiles: readyCount
+    });
+    enqueueDocGenerationJob_(runId, {
+      onboardingId: fallbackOnboardingId,
+      jobId: jobId,
+      agreementFileId: args && args.agreementFileId || ""
+    }, { front: true, continuation: true });
+    ensureDocGenerationQueueTrigger({ refresh: true });
+    log_(runId, "INFO", "DOCGEN_INCOMPLETE_JOB_REQUEUED", {
+      jobId: jobId,
+      onboardingId: fallbackOnboardingId,
       expectedItems: items.length,
       readyFiles: readyCount
     });
