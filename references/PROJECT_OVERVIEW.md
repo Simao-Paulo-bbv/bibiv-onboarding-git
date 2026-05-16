@@ -71,6 +71,8 @@ Bot: JOB - finish and continue queue (Updates on Generation_Job_Items,
 
 The Apps Script source lives in the project subfolder (clasp-managed; push with `clasp push`). Connected to git remote `bibiv-onboarding-git`.
 
+GCP diagnostics use the BIBIV Onboarding Cloud project with keyless service-account impersonation. See `references/GCP_CONTEXT.md` and source `scripts/use-gcp-bibiv-onboarding.sh` before reading Cloud Logging so local `gcloud` project switches do not matter.
+
 | File | Purpose |
 |---|---|
 | `00_Config.js` | Spreadsheet IDs, runtime limits, feature toggles, AppSheet creds, GOV config, schema arrays |
