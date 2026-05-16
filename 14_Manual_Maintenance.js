@@ -8,6 +8,11 @@
 const MANUAL_IBAN_REFRESH_CURSOR_KEY = "MANUAL_IBAN_REFRESH_CURSOR_ROW";
 const MANUAL_PEOPLE_REFS_CURSOR_KEY = "MANUAL_PEOPLE_REFS_CURSOR_ROW";
 
+const MANUAL_MAIN_STATUS_REPAIR = {
+  ONBOARDING_ID: "",
+  STATUS: "Init"
+};
+
 function runManualRefreshIbanBankMetadata() {
   return refreshIbanBankMetadataRows_({
     forceAllRows: false,
@@ -53,6 +58,32 @@ function runManualAuditPeopleRefsFromPeopleList() {
 function resetManualPeopleRefsCursor() {
   PropertiesService.getScriptProperties().deleteProperty(MANUAL_PEOPLE_REFS_CURSOR_KEY);
   return { ok: true, cursorReset: true };
+}
+
+function runManualRepairMainStatus(onboardingIdArg, statusArg) {
+  const runId = makeRunId_("manual-main-status");
+  const onboardingId = String(onboardingIdArg || MANUAL_MAIN_STATUS_REPAIR.ONBOARDING_ID || "").trim();
+  const status = String(statusArg || MANUAL_MAIN_STATUS_REPAIR.STATUS || CONFIG.STATUS_TO_SEND || "").trim();
+
+  if (!onboardingId) throw new Error("MANUAL_MAIN_STATUS_REPAIR.ONBOARDING_ID is blank.");
+  if (!status) throw new Error("MANUAL_MAIN_STATUS_REPAIR.STATUS is blank.");
+
+  const result = callAppSheet_(runId, CONFIG.APPSHEET_TABLE_MAIN, {
+    ID: onboardingId,
+    Status: status
+  }, CONFIG.APPSHEET_ACTION_EDIT, onboardingId);
+
+  log_(runId, "INFO", "MANUAL_MAIN_STATUS_REPAIR_DONE", {
+    onboardingId: onboardingId,
+    status: status
+  });
+
+  return {
+    ok: true,
+    onboardingId: onboardingId,
+    status: status,
+    response: result && result.parsed || null
+  };
 }
 
 function refreshIbanBankMetadataRows_(options) {

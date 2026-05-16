@@ -338,8 +338,9 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         if (CONFIG.WRITE_STATUS_JUST_IN_TIME) {
           // Never persist Init in local sheet before a successful Add.
           // Init in local sheet caused repeated Add attempts and status overwrite loops.
-          // We only send Init for truly fresh rows (new ID assigned now + blank local status).
-          if (liveIsEmpty && idAssignedNow) {
+          // We send Init only in the first Add payload while the live local status is still
+          // blank/Init; AppSheet owns all subsequent status transitions.
+          if (liveIsEmpty || liveIsInit) {
             payloadMain["Status"] = CONFIG.STATUS_TO_SEND;
           } else if (payloadMain && Object.prototype.hasOwnProperty.call(payloadMain, "Status")) {
             delete payloadMain["Status"];
@@ -347,6 +348,12 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         } else if (payloadMain && Object.prototype.hasOwnProperty.call(payloadMain, "Status")) {
           delete payloadMain["Status"];
         }
+        log_(runId, "INFO", "APPSHEET_ADD_STATUS_PREPARED", {
+          rowNum,
+          idAssignedNow,
+          liveStatus: liveStatus,
+          statusInPayload: String(payloadMain && payloadMain["Status"] ? payloadMain["Status"] : "")
+        });
       } else if (actionToSend === CONFIG.APPSHEET_ACTION_EDIT) {
         // Never send Status during EDIT (protect against overwriting AppSheet-side status)
         if (payloadMain && Object.prototype.hasOwnProperty.call(payloadMain, "Status")) delete payloadMain["Status"];
@@ -437,6 +444,12 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
             if (appSheetStatus) {
               dest.getRange(rowNum, statusIdx + 1).setValue(appSheetStatus);
               log_(runId, "INFO", "STATUS_SYNCED_FROM_APPSHEET", { rowNum, status: appSheetStatus });
+            } else {
+              log_(runId, "WARN", "APPSHEET_ADD_STATUS_NOT_RETURNED", {
+                rowNum,
+                id: payloadId,
+                statusSentInAddPayload: String(payloadMain && payloadMain["Status"] ? payloadMain["Status"] : "")
+              });
             }
           }
           if (syncIdx != null) appendSyncMarker_(dest, rowNum, syncIdx, `APPSHEET_OK ${formatNow_()}`);
