@@ -2,7 +2,7 @@
 
 ## 1. GOV API at `gov.api.hypnotype.com`
 
-Three endpoints, called in this **fixed order** per row:
+Four endpoints, called in this **fixed order** per row:
 
 ### REGON (mandatory, first)
 - Input: NIP.
@@ -25,6 +25,16 @@ Three endpoints, called in this **fixed order** per row:
 - **Cache**: `CacheService.getScriptCache()` keyed by account number.
 - **Skip entirely if the row already has full bank metadata** (avoids burning quota — earlier we burned 1500 calls before this guard).
 - **Skip if REGON or VAT had a hard error** (no useful work to do).
+
+### KNF / RPK
+- Input: NIP.
+- Endpoint: `/v1/knf/rpk?nip=...`.
+- Writes verified RPK number to append-only column `KNF_verified`.
+- Non-blocking: HTTP/fetch/no-result issues are logged and must not prevent AppSheet Add.
+- Manual repair in `14_Manual_Maintenance.js`:
+  - `runManualRefreshKnfVerified()` fills missing values for existing rows.
+  - `runManualRefreshKnfVerifiedForceAll()` overwrites existing values.
+  - `runManualRefreshKnfVerifiedForNips()` targets `MANUAL_KNF_VERIFICATION.NIPS_TEXT` / `NIPS`.
 
 ## 2. AppSheet REST API v2
 

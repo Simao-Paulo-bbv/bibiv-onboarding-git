@@ -243,6 +243,7 @@ function looksLikeEmail_(value) {
 
 function dropOptionalEmptyPayloadFields_(payload) {
   const optionalCols = {
+    "KNF_verified": true,
     "pesel przedstawiciela handlowego": true,
     "numer dowodu beneficjenta": true,
     "pesel osoby kontaktowej": true

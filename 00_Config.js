@@ -85,7 +85,7 @@ const CONFIG = {
   FORCE_IMPORT: false,
   FORCE_IMPORT_LIMIT: 1,
 
-  // GOV API Platform (VAT/REGON/IBAN)
+  // GOV API Platform (VAT/REGON/IBAN/KNF)
   GOV_API_BASE_URL: "https://gov.api.hypnotype.com",
   GOV_API_KEY: "jb43WutIT32vH5WUbyWvNtgQkEO1_v5CKoczgYs7b9c",
   GOV_TIMEOUT_MS: 20000,
@@ -93,6 +93,7 @@ const CONFIG = {
   GOV_VAT_PATH: "/v1/vat/search",
   GOV_REGON_PATH: "/v1/regon/search",
   GOV_IBAN_PATH: "/v1/iban/validate",
+  GOV_KNF_RPK_PATH: "/v1/knf/rpk",
   REQUIRE_GOV_API_FOR_VAT: true,
 
   APPSHEET_APP_ID: "ebb1aa13-9408-4a7d-8d41-8cb03b9e766f",
@@ -230,6 +231,8 @@ const APPSHEET_SCHEMA = [
   "imię i nazwisko przedstawiciela handlowego",
   "pesel przedstawiciela handlowego",
   "numer telefonu przedstawiciela handlowego",
+  // NEW: KNF/RPK number verified from GOV KNF API (append-only to avoid shifting)
+  "KNF_verified",
 ];
 
 const DEST_SCHEMA = APPSHEET_SCHEMA.filter(h => h !== "_RowNumber");
@@ -262,6 +265,7 @@ const SYSTEM_DEFAULTS = {
   "imię i nazwisko przedstawiciela handlowego": "",
   "pesel przedstawiciela handlowego": "",
   "numer telefonu przedstawiciela handlowego": "",
+  "KNF_verified": "",
   "sync_status": "",
 };
 
@@ -337,4 +341,5 @@ const APPSHEET_MAIN_ALLOWED_COLS = [
   "imię i nazwisko przedstawiciela handlowego",
   "pesel przedstawiciela handlowego",
   "numer telefonu przedstawiciela handlowego",
+  "KNF_verified",
 ];

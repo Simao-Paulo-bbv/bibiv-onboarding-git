@@ -1,5 +1,5 @@
 /** =========================
- *  GOV APIs (REGON + VAT + IBAN)
+ *  GOV APIs (REGON + VAT + IBAN + KNF)
  *  ========================= */
 function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   const nipClean = normalizeNipForApi_(nip);
@@ -237,6 +237,12 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
     }
   }
 
+  // --- 4) KNF/RPK verification ---
+  // Non-blocking: KNF API availability must not prevent AppSheet Add.
+  writeKnfVerifiedForRow_(runId, dest, mapping, rowNum, nipClean, {
+    skipIfPresent: true
+  });
+
   const nipControlIdx = mapping.destKey.nipControlIdx;
   if (nipControlIdx != null) dest.getRange(rowNum, nipControlIdx + 1).setValue(nipClean);
 
@@ -306,6 +312,152 @@ function fetchGovApiGet_(path, query) {
 
   const body = res.getContentText() || "";
   return { httpCode: res.getResponseCode(), body: body, parsed: safeJsonParse_(body) };
+}
+
+function writeKnfVerifiedForRow_(runId, dest, mapping, rowNum, nip, options) {
+  options = options || {};
+  const colName = "KNF_verified";
+  if (!mapping || !mapping.dstIndex || mapping.dstIndex[colName] == null) {
+    log_(runId, "INFO", "GOV_KNF_SKIP_NO_COLUMN", { rowNum: rowNum });
+    return { ok: false, skipped: true, reason: "NO_COLUMN" };
+  }
+
+  const nipClean = normalizeNipForApi_(nip);
+  if (!nipClean) {
+    log_(runId, "INFO", "GOV_KNF_SKIP_NO_NIP", { rowNum: rowNum });
+    return { ok: false, skipped: true, reason: "NO_NIP" };
+  }
+
+  const colIdx = mapping.dstIndex[colName];
+  const existing = String(dest.getRange(rowNum, colIdx + 1).getValue() || "").trim();
+  if (options.skipIfPresent && existing) {
+    log_(runId, "INFO", "GOV_KNF_SKIP_ALREADY_PRESENT", {
+      rowNum: rowNum,
+      nip: nipClean,
+      value: existing
+    });
+    return { ok: true, skipped: true, value: existing, reason: "ALREADY_PRESENT" };
+  }
+
+  try {
+    log_(runId, "INFO", "GOV_KNF_CALL", { rowNum: rowNum, nip: nipClean });
+    const res = fetchGovApiGet_(CONFIG.GOV_KNF_RPK_PATH, { nip: nipClean });
+    if (res.httpCode !== 200) {
+      log_(runId, "WARN", "GOV_KNF_HTTP", {
+        rowNum: rowNum,
+        nip: nipClean,
+        httpCode: res.httpCode,
+        bodySnippet: String(res.body || "").slice(0, 500)
+      });
+      return { ok: false, httpCode: res.httpCode, reason: "HTTP_" + String(res.httpCode) };
+    }
+
+    const knfNumber = pickKnfRpkNumber_(res.parsed);
+    if (!knfNumber) {
+      log_(runId, "WARN", "GOV_KNF_NO_RPK", {
+        rowNum: rowNum,
+        nip: nipClean,
+        bodySnippet: String(res.body || "").slice(0, 500)
+      });
+      return { ok: false, httpCode: res.httpCode, reason: "NO_RPK" };
+    }
+
+    dest.getRange(rowNum, colIdx + 1).setValue(knfNumber);
+    log_(runId, "INFO", "GOV_KNF_OK", {
+      rowNum: rowNum,
+      nip: nipClean,
+      knfNumber: knfNumber
+    });
+    return { ok: true, httpCode: res.httpCode, value: knfNumber };
+  } catch (e) {
+    log_(runId, "WARN", "GOV_KNF_FETCH_ERROR", {
+      rowNum: rowNum,
+      nip: nipClean,
+      err: String(e).slice(0, 500)
+    });
+    return { ok: false, httpCode: 0, reason: "FETCH_ERROR" };
+  }
+}
+
+function pickKnfRpkNumber_(parsed) {
+  if (!parsed || typeof parsed !== "object") return "";
+
+  const data = parsed.data && typeof parsed.data === "object" ? parsed.data : parsed;
+  const direct = normalizeKnfRpkNumber_(
+    data.registry_number ||
+      data.registryNumber ||
+      data.REGISTRY_NUMBER ||
+      (data.record && data.record.REGISTRY_NUMBER)
+  );
+  if (direct) return direct;
+
+  const found = findKnfRpkNumberDeep_(data, 0);
+  return found ? normalizeKnfRpkNumber_(found) : "";
+}
+
+function findKnfRpkNumberDeep_(value, depth) {
+  if (depth > 8 || value === null || value === undefined) return "";
+
+  if (typeof value === "string" || typeof value === "number") {
+    const normalized = normalizeKnfRpkNumber_(value);
+    if (normalized) return normalized;
+    return "";
+  }
+
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const found = findKnfRpkNumberDeep_(value[i], depth + 1);
+      if (found) return found;
+    }
+    return "";
+  }
+
+  if (typeof value === "object") {
+    const preferredKeys = [
+      "rpk",
+      "RPK",
+      "rpkNumber",
+      "rpk_number",
+      "knfNumber",
+      "knf_number",
+      "registrationNumber",
+      "registration_number",
+      "REGISTRY_NUMBER",
+      "registerNumber",
+      "register_number",
+      "numerWpisu",
+      "NumerWpisu",
+      "numer_wpisu",
+      "nrWpisu",
+      "NrWpisu",
+      "number",
+      "Number"
+    ];
+
+    for (let i = 0; i < preferredKeys.length; i++) {
+      const key = preferredKeys[i];
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      const found = findKnfRpkNumberDeep_(value[key], depth + 1);
+      if (found) return found;
+    }
+
+    for (const key in value) {
+      const found = findKnfRpkNumberDeep_(value[key], depth + 1);
+      if (found) return found;
+    }
+  }
+
+  return "";
+}
+
+function normalizeKnfRpkNumber_(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  if (!raw) return "";
+
+  const direct = raw.match(/\bRPK[\s-]*\d{3,}\b/i);
+  if (direct) return direct[0].replace(/[\s-]+/g, "").toUpperCase();
+
+  return "";
 }
 
 function pickNameFromRegon_(parsed, regonClean, nipClean) {

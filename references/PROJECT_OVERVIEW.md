@@ -18,7 +18,7 @@ Google Sheet "SOURCE" (raw submissions, headers may rename in Squarespace)
 Google Sheet "DEST" (canonical schema, stable column order)
       │  [04_Process.js]
       │   ├─ assign Onboarding_ID
-      │   ├─ GOV enrichment (REGON → VAT → IBAN) via gov.api.hypnotype.com
+      │   ├─ GOV enrichment (REGON → VAT → IBAN → KNF/RPK) via gov.api.hypnotype.com
       │   ├─ Bank_Accounts child sync (11_Bank_Accounts.js)
       │   ├─ optional historical backfill for blank bank/sales-rep fields
       │   ├─ People_List refs (Contact / Manager / Beneficial Owner) with
@@ -83,7 +83,7 @@ Primary status invariant: the import processor sends `Status = Init` only once, 
 | `03_Import.js` | SOURCE → DEST import with dedupe + `_Import_History` hidden sheet |
 | `04_Process.js` | Core pipeline: ID → MF → Bank_Accounts → People_List refs → AppSheet Add/Edit |
 | `05_AppSheet_API.js` | REST v2 caller, payload allowlist, schema-mismatch detection |
-| `06_MF_API.js` | REGON → VAT → IBAN order, Not-VAT fast path, IBAN cache |
+| `06_MF_API.js` | REGON → VAT → IBAN → KNF/RPK order, Not-VAT fast path, IBAN cache |
 | `07_Payload_And_Normalization.js` | Build & normalize AppSheet payload (NIP/KRS/REGON, dates, phone, accountNumbers) |
 | `08_ID_And_Dedupe_Time.js` | Onboarding_ID assignment, time helpers |
 | `09_Logging.js` | Logger + sync_status marker append |
@@ -96,7 +96,7 @@ Primary status invariant: the import processor sends `Status = Init` only once, 
 
 ## External services
 
-- **GOV API at `gov.api.hypnotype.com`** — REGON, VAT, IBAN
+- **GOV API at `gov.api.hypnotype.com`** — REGON, VAT, IBAN, KNF/RPK
 - **AppSheet REST API v2** — `https://www.appsheet.com/api/v2/apps/{appId}/tables/{table}/Action`, header `ApplicationAccessKey`
 - **Standalone Apps Script `BIBIV_Onboarding_DocsCreator`** — Script ID `1KOKGrJuBw6U2xiNg8UP_7ZlFWbihc2ug7UbBhHgD2p427HN6-drxp3qU`; exports Agreement PDFs through Google Docs/Drive renderer.
 

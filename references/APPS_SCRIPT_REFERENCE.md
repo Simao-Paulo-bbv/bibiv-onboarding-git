@@ -64,7 +64,7 @@ Critical guards:
 - `isAppSheetSchemaMismatchBody_` — detects "mismatch in number of columns" / "regenerate the table column structure" responses → marker `APPSHEET_SCHEMA_MISMATCH`.
 
 ### `06_MF_API.js`
-- Order: **REGON (by NIP, mandatory) → VAT → IBAN**.
+- Order: **REGON (by NIP, mandatory) → VAT → IBAN → KNF/RPK**.
 - Endpoints under `gov.api.hypnotype.com`.
 - VAT retry strategy: today's date, then no date.
 - Not-VAT path: `subject:null` from REGON → write `statusVat="Not VAT"`, build `residenceAddress` from REGON: `"Ulica NrNier NrNier/NrLok, KodPocztowy Miejscowosc"`. Skip VAT/IBAN.
@@ -72,6 +72,7 @@ Critical guards:
 - IBAN skipped on hard REGON/VAT error.
 - VAT calls use GOV API only; no direct MF/relay fallback remains in the Apps Script.
 - Manual bank metadata repair lives in `14_Manual_Maintenance.js`: run `runManualRefreshIbanBankMetadata()` to refill Google Sheet rows with missing IBAN-derived fields, or `runManualRefreshAllIbanBankMetadata()` to force a fresh IBAN API check for all Google Sheet rows with an onboarding ID and bank account. It updates only `swift/bic`, `Bank name`, `Bank address`, and `Bank city`. `kod swift banku` is a source/form field and is not written by IBAN API helpers. Use `resetManualIbanRefreshCursor()` if the forced all-row refresh should start again from the top.
+- KNF/RPK verification uses GOV API `/v1/knf/rpk?nip=...`, writes append-only `KNF_verified`, and is non-blocking. Manual helpers: `runManualRefreshKnfVerified()`, `runManualRefreshKnfVerifiedForceAll()`, and `runManualRefreshKnfVerifiedForNips()` with `MANUAL_KNF_VERIFICATION.NIPS_TEXT` / `NIPS`.
 - Manual People ref repair also lives in `14_Manual_Maintenance.js`: run `runManualAuditPeopleRefsFromPeopleList()` first, then `runManualRepairPeopleRefsFromPeopleList()` to copy existing `People_List[PersonID]` values back into `ContactPersonID`, `ManagerPersonID`, and `BeneficialOwnerPersonID` in the main Google Sheet. It reads `People_List`; it does not create or parse people. Matching is by `OnboardingID + Role`, with a name check against the main row.
 
 ### `07_Payload_And_Normalization.js`

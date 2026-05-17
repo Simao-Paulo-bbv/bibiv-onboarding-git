@@ -45,6 +45,10 @@
 - For manual Google Sheet repair, use `runManualRefreshIbanBankMetadata()` first. It only targets rows missing at least one bank metadata field. Use `runManualRefreshAllIbanBankMetadata()` only when you intentionally want to re-query every row with an account number. These default repair functions do not update AppSheet.
 - AppSheet `Edit` payloads must not include blank bank metadata fields. Sending `swift/bic`, `Bank name`, `Bank address`, or `Bank city` as an empty string can clear AppSheet-side values.
 
+### ❌ Do not block import on KNF/RPK API
+- `KNF_verified` is enrichment, not a hard gate. GOV KNF failures must only log warnings.
+- The column is append-only at the end of DEST/AppSheet schema. After deploying the script schema, regenerate the AppSheet table schema before relying on payload writes to `KNF_verified`.
+
 ### ❌ Do not delete DEST rows expecting clean re-import
 - DEST deletion alone does NOT trigger re-import — `_Import_History` still has the `(NIP, SubmittedOn)` key.
 - If a manual re-import is needed: clear the relevant rows in `_Import_History` AND set `SOURCE_REIMPORT_IF_MISSING_IN_DEST=true`.
