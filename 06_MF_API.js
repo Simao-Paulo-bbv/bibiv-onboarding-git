@@ -340,8 +340,22 @@ function writeKnfVerifiedForRow_(runId, dest, mapping, rowNum, nip, options) {
   }
 
   try {
-    log_(runId, "INFO", "GOV_KNF_CALL", { rowNum: rowNum, nip: nipClean });
-    const res = fetchGovApiGet_(CONFIG.GOV_KNF_RPK_PATH, { nip: nipClean });
+    const maxAttempts = Math.max(1, Number(options.maxAttempts || 3));
+    let res = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      log_(runId, "INFO", "GOV_KNF_CALL", { rowNum: rowNum, nip: nipClean, attempt: attempt });
+      res = fetchGovApiGet_(CONFIG.GOV_KNF_RPK_PATH, { nip: nipClean });
+      if (!res || res.httpCode < 500 || attempt >= maxAttempts) break;
+      log_(runId, "WARN", "GOV_KNF_RETRYABLE_HTTP", {
+        rowNum: rowNum,
+        nip: nipClean,
+        attempt: attempt,
+        httpCode: res.httpCode,
+        bodySnippet: String(res.body || "").slice(0, 500)
+      });
+      Utilities.sleep(Math.min(5000, 750 * attempt));
+    }
+
     if (res.httpCode !== 200) {
       log_(runId, "WARN", "GOV_KNF_HTTP", {
         rowNum: rowNum,

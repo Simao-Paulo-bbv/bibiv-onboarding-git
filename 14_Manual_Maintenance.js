@@ -111,6 +111,15 @@ function runManualRefreshKnfVerifiedForNips() {
   });
 }
 
+function runManualRefreshKnfVerifiedForNipsText(nipsText, overwriteExistingArg) {
+  return refreshKnfVerifiedRows_({
+    forceAllRows: true,
+    overwriteExisting: overwriteExistingArg === true,
+    maxRows: MANUAL_KNF_VERIFICATION.MAX_ROWS || 250,
+    targetNips: parseManualKnfVerificationNips_(nipsText)
+  });
+}
+
 function runManualRefreshKnfVerifiedForceAll() {
   return refreshKnfVerifiedRows_({
     forceAllRows: true,
@@ -120,14 +129,15 @@ function runManualRefreshKnfVerifiedForceAll() {
 }
 
 function getManualKnfVerificationNips_() {
-  const out = {};
-  const list = Array.isArray(MANUAL_KNF_VERIFICATION.NIPS) ? MANUAL_KNF_VERIFICATION.NIPS : [];
-  list.forEach(value => {
-    const nip = normalizeNipForApi_(value);
-    if (nip) out[nip] = true;
-  });
+  return parseManualKnfVerificationNips_(
+    String(MANUAL_KNF_VERIFICATION.NIPS_TEXT || "") + " " +
+      (Array.isArray(MANUAL_KNF_VERIFICATION.NIPS) ? MANUAL_KNF_VERIFICATION.NIPS.join(" ") : "")
+  );
+}
 
-  String(MANUAL_KNF_VERIFICATION.NIPS_TEXT || "")
+function parseManualKnfVerificationNips_(nipsText) {
+  const out = {};
+  String(nipsText || "")
     .split(/[\s,;]+/)
     .forEach(value => {
       const nip = normalizeNipForApi_(value);

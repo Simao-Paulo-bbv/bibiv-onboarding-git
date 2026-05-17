@@ -35,6 +35,7 @@ Four endpoints, called in this **fixed order** per row:
   - `runManualRefreshKnfVerified()` fills missing values for existing rows.
   - `runManualRefreshKnfVerifiedForceAll()` overwrites existing values.
   - `runManualRefreshKnfVerifiedForNips()` targets `MANUAL_KNF_VERIFICATION.NIPS_TEXT` / `NIPS`.
+  - `runManualRefreshKnfVerifiedForNipsText(nipsText, overwriteExisting)` targets an ad-hoc whitespace/comma/semicolon-separated NIP list.
 
 ## 2. AppSheet REST API v2
 
