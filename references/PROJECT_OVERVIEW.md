@@ -73,7 +73,7 @@ The Apps Script source lives in the project subfolder (clasp-managed; push with 
 
 GCP diagnostics use the BIBIV Onboarding Cloud project with keyless service-account impersonation. See `references/GCP_CONTEXT.md` and source `scripts/use-gcp-bibiv-onboarding.sh` before reading Cloud Logging so local `gcloud` project switches do not matter.
 
-Primary status invariant: the import processor sends `Status = Init` only once, at the very end of initial processing and immediately before the first AppSheet `Add`. After AppSheet receives that row, AppSheet automations or downstream scripts own `Status` and Apps Script must not automatically overwrite it.
+Primary status invariant: the import processor sends an initial `Status` only once, at the very end of initial processing and immediately before the first AppSheet `Add`. The normal value is `Init`; if pre-send controls detect KNF, SWIFT, account-number, or sales-rep data issues, the initial value is `need verification`. After AppSheet receives that row, AppSheet automations or downstream scripts own `Status` and Apps Script must not automatically overwrite it.
 
 | File | Purpose |
 |---|---|

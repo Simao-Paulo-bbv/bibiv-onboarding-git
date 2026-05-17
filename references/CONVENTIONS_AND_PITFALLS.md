@@ -11,7 +11,7 @@
 
 ### ❌ Do not overwrite AppSheet-managed Status from Apps Script
 - Once a row exists in AppSheet, AppSheet owns `Status`. The script wrote `Init`, AppSheet flipped to `New`, the script flipped back to `Init`, ad infinitum.
-- **Primary rule**: write `Status = Init` only at the very end of initial processing, after all API enrichment, People refs, bank metadata, and readiness checks have succeeded, immediately before the first AppSheet `Add`.
+- **Primary rule**: write initial `Status` only at the very end of initial processing, after all API enrichment, People refs, bank metadata, and readiness checks have succeeded, immediately before the first AppSheet `Add`. Use `Init` for clean rows and `need verification` when pre-send controls detect KNF, SWIFT, account-number, or sales-rep data issues.
 - After that first AppSheet write, AppSheet automations and downstream scripts own `Status` completely. Do not automatically overwrite it from Apps Script; AppSheet may immediately move it to values such as `New`.
 - On any later `Edit`, strip `Status` from payload entirely.
 

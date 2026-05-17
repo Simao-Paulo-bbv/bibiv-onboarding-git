@@ -341,7 +341,15 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
           // We send Init only in the first Add payload while the live local status is still
           // blank/Init; AppSheet owns all subsequent status transitions.
           if (liveIsEmpty || liveIsInit) {
-            payloadMain["Status"] = CONFIG.STATUS_TO_SEND;
+            const verificationStatus = resolveInitialMainStatus_(payloadMain);
+            payloadMain["Status"] = verificationStatus.status;
+            if (verificationStatus.needsVerification) {
+              log_(runId, "WARN", "APPSHEET_ADD_NEEDS_VERIFICATION", {
+                rowNum: rowNum,
+                status: verificationStatus.status,
+                reasons: verificationStatus.reasons
+              });
+            }
           } else if (payloadMain && Object.prototype.hasOwnProperty.call(payloadMain, "Status")) {
             delete payloadMain["Status"];
           }
@@ -663,6 +671,84 @@ function canRunGovEnrichmentForStatus_(statusVal, idAssignedNow) {
   // Compatibility for a row imported by an older config during this same execution.
   // New imports now receive Status=Init in SYSTEM_DEFAULTS, so this path should be rare.
   return status === "" && idAssignedNow === true;
+}
+
+function resolveInitialMainStatus_(payload) {
+  const initStatus = String((CONFIG && CONFIG.STATUS_TO_SEND) || "Init").trim() || "Init";
+  const verificationStatus = String((CONFIG && CONFIG.STATUS_NEED_VERIFICATION) || "need verification").trim() || "need verification";
+  const reasons = evaluateMainVerificationIssues_(payload);
+  return {
+    status: reasons.length ? verificationStatus : initStatus,
+    needsVerification: reasons.length > 0,
+    reasons: reasons
+  };
+}
+
+function evaluateMainVerificationIssues_(payload) {
+  payload = payload || {};
+  const issues = [];
+
+  const declaredKnf = normalizeRpkForVerification_(payload["numer wpisu do knf"]);
+  const verifiedKnf = normalizeRpkForVerification_(payload["KNF_verified"]);
+  if (!declaredKnf || !verifiedKnf || declaredKnf !== verifiedKnf) {
+    issues.push("knf_mismatch_or_missing");
+  }
+
+  const declaredSwift = normalizeComparableCode_(payload["kod swift banku"]);
+  const verifiedSwift = normalizeComparableCode_(payload["swift/bic"]);
+  if (declaredSwift !== verifiedSwift) {
+    issues.push("swift_mismatch");
+  }
+
+  const primaryAccount = normalizeAccountNumberForVerification_(payload["numer rachunku bankowego"]);
+  const accountNumbers = parseAccountNumbersForVerification_(payload["accountNumbers"]);
+  if (!primaryAccount || accountNumbers.indexOf(primaryAccount) < 0) {
+    issues.push("account_not_in_accountNumbers");
+  }
+
+  if (!String(payload["imię i nazwisko przedstawiciela handlowego"] || "").trim()) {
+    issues.push("missing_sales_rep_name");
+  }
+  if (!String(payload["email przedstawiciela handlowego"] || "").trim()) {
+    issues.push("missing_sales_rep_email");
+  }
+
+  return issues;
+}
+
+function normalizeRpkForVerification_(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  if (!raw) return "";
+  const direct = raw.match(/\bRPK[\s-]*\d{3,}\b/i);
+  if (direct) return direct[0].replace(/[\s-]+/g, "").toUpperCase();
+  const digits = raw.replace(/\D/g, "");
+  return digits ? ("RPK" + digits) : "";
+}
+
+function normalizeComparableCode_(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .replace(/\s+/g, "")
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeAccountNumberForVerification_(value) {
+  return String(value === null || value === undefined ? "" : value).replace(/\D/g, "");
+}
+
+function parseAccountNumbersForVerification_(value) {
+  const raw = String(value === null || value === undefined ? "" : value).trim();
+  if (!raw) return [];
+  const parts = raw.split(/[,\s;]+/);
+  const out = [];
+  const seen = {};
+  for (let i = 0; i < parts.length; i++) {
+    const account = normalizeAccountNumberForVerification_(parts[i]);
+    if (!account || seen[account]) continue;
+    seen[account] = true;
+    out.push(account);
+  }
+  return out;
 }
 
 function markRowAsNeedVerification_(runId, dest, rowNum, statusIdx, row, reason) {
