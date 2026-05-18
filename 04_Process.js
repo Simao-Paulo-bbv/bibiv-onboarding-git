@@ -685,7 +685,7 @@ function canRunGovEnrichmentForStatus_(statusVal, idAssignedNow) {
 function isRetryableTechnicalNeedVerificationStatus_(statusVal, syncStatus) {
   const status = String(statusVal || "").trim().toLowerCase();
   const verificationStatus = String((CONFIG && CONFIG.STATUS_NEED_VERIFICATION) || "need verification").trim().toLowerCase();
-  if (!status || status !== verificationStatus) return false;
+  if (!status || status.indexOf(verificationStatus) !== 0) return false;
   return isRetryableRegonBlockMarker_(syncStatus);
 }
 
@@ -704,10 +704,44 @@ function resolveInitialMainStatus_(payload) {
   const verificationStatus = String((CONFIG && CONFIG.STATUS_NEED_VERIFICATION) || "need verification").trim() || "need verification";
   const reasons = evaluateMainVerificationIssues_(payload);
   return {
-    status: reasons.length ? verificationStatus : initStatus,
+    status: reasons.length ? buildNeedVerificationStatus_(verificationStatus, reasons) : initStatus,
     needsVerification: reasons.length > 0,
     reasons: reasons
   };
+}
+
+function buildNeedVerificationStatus_(baseStatus, reasons) {
+  const base = String(baseStatus || "need verification").trim() || "need verification";
+  const labels = [];
+  const seen = {};
+  const src = Array.isArray(reasons) ? reasons : [];
+
+  for (let i = 0; i < src.length; i++) {
+    const label = verificationReasonLabel_(src[i]);
+    if (!label || seen[label]) continue;
+    seen[label] = true;
+    labels.push(label);
+  }
+
+  return labels.length ? (base + " - " + labels.join(", ")) : base;
+}
+
+function verificationReasonLabel_(reason) {
+  switch (String(reason || "")) {
+    case "swift_mismatch":
+      return "swift";
+    case "account_not_in_accountNumbers":
+      return "account";
+    case "knf_mismatch_or_missing":
+      return "RPK";
+    case "missing_sales_rep_name":
+    case "missing_sales_rep_email":
+      return "sales rep";
+    case "REGON_BLOCK":
+      return "regon";
+    default:
+      return "other";
+  }
 }
 
 function evaluateMainVerificationIssues_(payload) {
@@ -789,13 +823,14 @@ function markRowAsNeedVerification_(runId, dest, rowNum, statusIdx, row, reason)
     currentStatus === "" ||
     (initStatus !== "" && currentStatus === initStatus) ||
     currentStatus.toLowerCase() === "init";
-  if (!canSet || currentStatus === CONFIG.STATUS_NEED_VERIFICATION) return;
+  if (!canSet || currentStatus.indexOf(CONFIG.STATUS_NEED_VERIFICATION) === 0) return;
 
-  dest.getRange(rowNum, statusIdx + 1).setValue(CONFIG.STATUS_NEED_VERIFICATION);
-  if (row) row[statusIdx] = CONFIG.STATUS_NEED_VERIFICATION;
+  const status = buildNeedVerificationStatus_(CONFIG.STATUS_NEED_VERIFICATION, [reason]);
+  dest.getRange(rowNum, statusIdx + 1).setValue(status);
+  if (row) row[statusIdx] = status;
   log_(runId, "WARN", "ROW_MARKED_NEED_VERIFICATION", {
     rowNum: rowNum,
-    status: CONFIG.STATUS_NEED_VERIFICATION,
+    status: status,
     reason: String(reason || "")
   });
 }
