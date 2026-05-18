@@ -23,8 +23,21 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   let regonHttpCode = 0;
   if (hasGovConfig) {
     try {
-      log_(runId, "INFO", "GOV_REGON_CALL", { rowNum, nip: nipClean });
-      const regonRes = fetchGovApiGet_(CONFIG.GOV_REGON_PATH, { nip: nipClean });
+      let regonRes = null;
+      const maxRegonAttempts = Math.max(1, Number((CONFIG && CONFIG.GOV_REGON_MAX_ATTEMPTS) || 3));
+      for (let attempt = 1; attempt <= maxRegonAttempts; attempt++) {
+        log_(runId, "INFO", "GOV_REGON_CALL", { rowNum, nip: nipClean, attempt: attempt });
+        regonRes = fetchGovApiGet_(CONFIG.GOV_REGON_PATH, { nip: nipClean });
+        if (!regonRes || regonRes.httpCode < 500 || attempt >= maxRegonAttempts) break;
+        log_(runId, "WARN", "GOV_REGON_RETRYABLE_HTTP", {
+          rowNum: rowNum,
+          nip: nipClean,
+          attempt: attempt,
+          httpCode: regonRes.httpCode,
+          bodySnippet: String(regonRes.body || "").slice(0, 500)
+        });
+        Utilities.sleep(Math.min(5000, 750 * attempt));
+      }
       regonHttpCode = regonRes.httpCode;
       if (regonRes.httpCode === 200) {
         nameFromRegon = pickNameFromRegon_(regonRes.parsed, "", nipClean);

@@ -49,7 +49,8 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
     const statusValRaw = (statusIdx != null) ? String(row[statusIdx] || "") : "";
     const statusVal = statusValRaw.trim();
     const isStatusInit = (statusVal !== "" && statusVal === String(CONFIG.STATUS_TO_SEND));
-    const hasExternalManagedStatus = (statusVal !== "" && !isStatusInit);
+    const retryableTechnicalStatus = isRetryableTechnicalNeedVerificationStatus_(statusVal, currentSync);
+    const hasExternalManagedStatus = (statusVal !== "" && !isStatusInit && !retryableTechnicalStatus);
     const mainAlreadyOk = currentSync.indexOf(CONFIG.MARKERS.MAIN_OK) >= 0 || hasExternalManagedStatus;
 
     // Czy rekord w AppSheet MAIN jest już poprawnie zapisany.
@@ -82,7 +83,7 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
       log_(runId, "INFO", "ID_ASSIGNED", { rowNum, id });
     }
 
-    const canRunGovEnrichment = canRunGovEnrichmentForStatus_(statusVal, idAssignedNow);
+    const canRunGovEnrichment = retryableTechnicalStatus || canRunGovEnrichmentForStatus_(statusVal, idAssignedNow);
 
     // MF enrichment (skip if already done unless missing data)
     let mfCallResult = { ok: false, httpCode: 0, rateLimited: false, reason: "NOT_CALLED" };
@@ -130,7 +131,7 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         (CONFIG.FEATURES.MF_SKIP_IF_MF_OK && hasConfirmedAndCompleteMf) ||
         (CONFIG.FEATURES.MF_SKIP_IF_DATA_PRESENT && hasMfDataComplete && hasMfOk) ||
         hasConfirmedNotVat ||
-        hasMfRegonBlock ||
+        (hasMfRegonBlock && !isRetryableRegonBlockMarker_(currentSync)) ||
         hasMfVatBlock ||
         hasMfRateLimit;
 
@@ -173,13 +174,20 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
 
     // Hard stop for REGON-blocked rows:
     // do not call further APIs and do not send to AppSheet until row is corrected.
-    const hasMfRegonBlockNow = currentSync.indexOf("MF_REGON_BLOCK") >= 0 || String(mfCallResult.reason || "").indexOf("REGON_") === 0;
+    const regonReasonNow = String(mfCallResult.reason || "");
+    const hasMfRegonBlockNow =
+      regonReasonNow.indexOf("REGON_") === 0 ||
+      (currentSync.indexOf("MF_REGON_BLOCK") >= 0 && !isRetryableRegonBlockMarker_(currentSync));
     if (hasMfRegonBlockNow) {
-      markRowAsNeedVerification_(runId, dest, rowNum, statusIdx, row, "REGON_BLOCK");
+      const retryableRegonBlock = isRetryableRegonReason_(regonReasonNow) || isRetryableRegonBlockMarker_(currentSync);
+      if (!retryableRegonBlock) {
+        markRowAsNeedVerification_(runId, dest, rowNum, statusIdx, row, "REGON_BLOCK");
+      }
       log_(runId, "WARN", "ROW_BLOCKED_REGON", {
         rowNum,
         nip: nipRaw,
-        reason: String(mfCallResult.reason || "MF_REGON_BLOCK")
+        reason: String(mfCallResult.reason || "MF_REGON_BLOCK"),
+        retryable: retryableRegonBlock
       });
       log_(runId, "INFO", "ROW_END", { rowNum });
       processed++;
@@ -327,7 +335,8 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
         const liveStatus = statusIdx != null ? String(dest.getRange(rowNum, statusIdx + 1).getValue() || "").trim() : "";
         const liveIsInit = (liveStatus !== "" && liveStatus === String(CONFIG.STATUS_TO_SEND));
         const liveIsEmpty = (liveStatus === "");
-        const liveExternalManaged = (liveStatus !== "" && !liveIsInit);
+        const liveIsRetryableTechnical = isRetryableTechnicalNeedVerificationStatus_(liveStatus, currentSync);
+        const liveExternalManaged = (liveStatus !== "" && !liveIsInit && !liveIsRetryableTechnical);
         if (liveExternalManaged) {
           log_(runId, "INFO", "ROW_SKIP_EXTERNAL_STATUS_MANAGED_LIVE", { rowNum, status: liveStatus });
           log_(runId, "INFO", "ROW_END", { rowNum });
@@ -340,7 +349,7 @@ function processDestRows_(runId, mapping, source, dest, startRow, endRow, starte
           // Init in local sheet caused repeated Add attempts and status overwrite loops.
           // We send Init only in the first Add payload while the live local status is still
           // blank/Init; AppSheet owns all subsequent status transitions.
-          if (liveIsEmpty || liveIsInit) {
+          if (liveIsEmpty || liveIsInit || liveIsRetryableTechnical) {
             const verificationStatus = resolveInitialMainStatus_(payloadMain);
             payloadMain["Status"] = verificationStatus.status;
             if (verificationStatus.needsVerification) {
@@ -671,6 +680,23 @@ function canRunGovEnrichmentForStatus_(statusVal, idAssignedNow) {
   // Newly imported rows keep Status blank until the just-in-time AppSheet Add decision.
   // This allows enrichment before AppSheet/downstream automations take over the status.
   return status === "" && idAssignedNow === true;
+}
+
+function isRetryableTechnicalNeedVerificationStatus_(statusVal, syncStatus) {
+  const status = String(statusVal || "").trim().toLowerCase();
+  const verificationStatus = String((CONFIG && CONFIG.STATUS_NEED_VERIFICATION) || "need verification").trim().toLowerCase();
+  if (!status || status !== verificationStatus) return false;
+  return isRetryableRegonBlockMarker_(syncStatus);
+}
+
+function isRetryableRegonBlockMarker_(syncStatus) {
+  const sync = String(syncStatus || "");
+  return /MF_REGON_BLOCK\b[^\n;]*REGON_(HTTP_5\d\d|FETCH_ERROR)/i.test(sync);
+}
+
+function isRetryableRegonReason_(reason) {
+  const value = String(reason || "").trim();
+  return /^REGON_HTTP_5\d\d$/i.test(value) || /^REGON_FETCH_ERROR$/i.test(value);
 }
 
 function resolveInitialMainStatus_(payload) {
