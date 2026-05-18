@@ -238,7 +238,7 @@ const APPSHEET_SCHEMA = [
 const DEST_SCHEMA = APPSHEET_SCHEMA.filter(h => h !== "_RowNumber");
 
 const SYSTEM_DEFAULTS = {
-  "Status": CONFIG.STATUS_TO_SEND,
+  "Status": "",
   "Lead Created": "",
   "Bank aproval": "",
   "Documents sent to client": "",

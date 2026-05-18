@@ -668,8 +668,8 @@ function canRunGovEnrichmentForStatus_(statusVal, idAssignedNow) {
   const status = String(statusVal || "").trim();
   const initStatus = String(CONFIG.STATUS_TO_SEND || "").trim();
   if (initStatus && status === initStatus) return true;
-  // Compatibility for a row imported by an older config during this same execution.
-  // New imports now receive Status=Init in SYSTEM_DEFAULTS, so this path should be rare.
+  // Newly imported rows keep Status blank until the just-in-time AppSheet Add decision.
+  // This allows enrichment before AppSheet/downstream automations take over the status.
   return status === "" && idAssignedNow === true;
 }
 
@@ -700,10 +700,14 @@ function evaluateMainVerificationIssues_(payload) {
     issues.push("swift_mismatch");
   }
 
-  const primaryAccount = normalizeAccountNumberForVerification_(payload["numer rachunku bankowego"]);
-  const accountNumbers = parseAccountNumbersForVerification_(payload["accountNumbers"]);
-  if (!primaryAccount || accountNumbers.indexOf(primaryAccount) < 0) {
-    issues.push("account_not_in_accountNumbers");
+  const vatStatus = String(payload["statusVat"] || "").trim().toLowerCase();
+  const skipAccountNumbersCheck = vatStatus === "not vat";
+  if (!skipAccountNumbersCheck) {
+    const primaryAccount = normalizeAccountNumberForVerification_(payload["numer rachunku bankowego"]);
+    const accountNumbers = parseAccountNumbersForVerification_(payload["accountNumbers"]);
+    if (!primaryAccount || accountNumbers.indexOf(primaryAccount) < 0) {
+      issues.push("account_not_in_accountNumbers");
+    }
   }
 
   if (!String(payload["imię i nazwisko przedstawiciela handlowego"] || "").trim()) {
