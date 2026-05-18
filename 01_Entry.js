@@ -219,7 +219,10 @@ if (scanRowStart !== 2) {
 
     const isStatusInit = (status !== "" && status === String(CONFIG.STATUS_TO_SEND));
     const isStatusEmpty = status === "";
-    const hasExternalManagedStatus = (status !== "" && !isStatusInit);
+    const retryableTechnicalStatus = (typeof isRetryableTechnicalNeedVerificationStatus_ === "function")
+      ? isRetryableTechnicalNeedVerificationStatus_(status, sync)
+      : false;
+    const hasExternalManagedStatus = (status !== "" && !isStatusInit && !retryableTechnicalStatus);
     if (hasExternalManagedStatus) continue;
     if (CONFIG.GOV_ENRICH_ONLY_STATUS_INIT === true && isStatusEmpty && id) continue;
 
