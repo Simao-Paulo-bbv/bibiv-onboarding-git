@@ -206,6 +206,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
       } else {
         const cachedBankMeta = getCachedIbanMeta_(mainAccount);
         if (cachedBankMeta && hasAnyIbanMeta_(cachedBankMeta)) {
+          applyDeclaredSwiftFallback_(dest, mapping, rowNum, cachedBankMeta, true);
           writeBankMetaToRow_(dest, mapping, rowNum, cachedBankMeta);
           log_(runId, "INFO", "GOV_IBAN_CACHE_HIT", {
             rowNum,
@@ -213,7 +214,8 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
             hasBic: !!cachedBankMeta.bic,
             hasBankName: !!cachedBankMeta.bankName,
             hasAddress: !!cachedBankMeta.address,
-            hasCity: !!cachedBankMeta.city
+            hasCity: !!cachedBankMeta.city,
+            bicFallback: !!cachedBankMeta.bicFallback
           });
         } else {
           try {
@@ -228,6 +230,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
             });
             if (ibanRes.httpCode === 200) {
               const bankMeta = pickBankMetaFromIban_(ibanRes.parsed);
+              applyDeclaredSwiftFallback_(dest, mapping, rowNum, bankMeta, isValidIbanResponse_(ibanRes.parsed));
               writeBankMetaToRow_(dest, mapping, rowNum, bankMeta);
               putCachedIbanMeta_(mainAccount, bankMeta);
               log_(runId, "INFO", "GOV_IBAN_OK", {
@@ -235,7 +238,8 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
                 hasBic: !!bankMeta.bic,
                 hasBankName: !!bankMeta.bankName,
                 hasAddress: !!bankMeta.address,
-                hasCity: !!bankMeta.city
+                hasCity: !!bankMeta.city,
+                bicFallback: !!bankMeta.bicFallback
               });
             } else {
               log_(runId, "WARN", "GOV_IBAN_HTTP", { rowNum, httpCode: ibanRes.httpCode });
@@ -661,6 +665,37 @@ function pickBankMetaFromIban_(parsed) {
     out.city = String(bank.city || data.city || "").trim();
   } catch (e) {}
   return out;
+}
+
+function isValidIbanResponse_(parsed) {
+  try {
+    const root = (parsed && parsed.data) ? parsed.data : parsed;
+    const result = root && root.result !== undefined ? root.result : "";
+    const message = String(root && root.message ? root.message : "").toLowerCase();
+    return String(result) === "200" || message.indexOf("valid iban") >= 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+function applyDeclaredSwiftFallback_(dest, mapping, rowNum, bankMeta, validIban) {
+  const meta = bankMeta || {};
+  if (!validIban || String(meta.bic || "").trim()) return meta;
+  const declaredSwift = getDeclaredSwiftForIbanFallback_(dest, mapping, rowNum);
+  if (!declaredSwift) return meta;
+  meta.bic = declaredSwift;
+  meta.bicFallback = true;
+  return meta;
+}
+
+function getDeclaredSwiftForIbanFallback_(dest, mapping, rowNum) {
+  try {
+    const idx = mapping && mapping.dstIndex ? mapping.dstIndex["kod swift banku"] : null;
+    if (idx == null) return "";
+    return String(dest.getRange(rowNum, idx + 1).getValue() || "").replace(/\s+/g, "").trim().toUpperCase();
+  } catch (e) {
+    return "";
+  }
 }
 
 function hasCompleteIbanMetadata_(dest, mapping, rowNum) {

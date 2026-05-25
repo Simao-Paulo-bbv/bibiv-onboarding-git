@@ -363,6 +363,7 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
   const idx = {
     id: mapping.dstIndex["ID"],
     account: mapping.dstIndex["numer rachunku bankowego"],
+    declaredSwift: mapping.dstIndex["kod swift banku"],
     bic: mapping.dstIndex["swift/bic"],
     bankName: mapping.dstIndex["Bank name"],
     bankAddress: mapping.dstIndex["Bank address"],
@@ -419,6 +420,13 @@ function refreshIbanBankMetadataRowsInSheet_(runId, dest, mapping, options) {
       meta = fetchManualIbanBankMeta_(runId, rowNum, account);
       cache[account] = meta || { bic: "", bankName: "", address: "", city: "" };
       out.apiCalls++;
+    }
+    if (meta && !String(meta.bic || "").trim() && meta.validIban && idx.declaredSwift != null) {
+      const declaredSwift = String(row[idx.declaredSwift] || "").replace(/\s+/g, "").trim().toUpperCase();
+      if (declaredSwift) {
+        meta.bic = declaredSwift;
+        meta.bicFallback = true;
+      }
     }
 
     if (!hasAnyManualIbanMeta_(meta)) {
@@ -501,7 +509,9 @@ function fetchManualIbanBankMeta_(runId, rowNum, account) {
       log_(runId, "WARN", "MANUAL_IBAN_API_HTTP", { rowNum: rowNum, httpCode: res.httpCode });
       return null;
     }
-    return pickBankMetaFromIban_(res.parsed);
+    const meta = pickBankMetaFromIban_(res.parsed);
+    meta.validIban = isValidIbanResponse_(res.parsed);
+    return meta;
   } catch (e) {
     log_(runId, "WARN", "MANUAL_IBAN_API_FAIL", { rowNum: rowNum, err: String(e).slice(0, 900) });
     return null;

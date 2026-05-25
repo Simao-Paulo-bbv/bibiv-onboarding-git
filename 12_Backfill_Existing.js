@@ -310,11 +310,13 @@ function fetchIbanMetaForBackfill_(runId, rowNum, normalizedAccount) {
       return null;
     }
     const meta = pickBankMetaFromIban_(res.parsed);
+    meta.validIban = isValidIbanResponse_(res.parsed);
     return {
       bic: String(meta.bic || "").trim(),
       bankName: String(meta.bankName || "").trim(),
       address: String(meta.address || "").trim(),
-      city: String(meta.city || "").trim()
+      city: String(meta.city || "").trim(),
+      validIban: !!meta.validIban
     };
   } catch (e) {
     log_(runId, "WARN", "BACKFILL_IBAN_FAIL", { rowNum: rowNum, err: String(e).slice(0, 300) });
