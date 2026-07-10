@@ -368,3 +368,27 @@ TEMPLATE_DOC_ID: "Google Docs template id"
 ```
 
 The manual generator is intentionally separate from the main queue. It reads the same onboarding data, creates a dated output folder under the selected root using `YYYY-MM-DD__vN`, and uses the same PDF naming pattern as the main agreement flow.
+
+Single PDF generation by NIP:
+
+```text
+runGenerateSingleDocumentForNip()
+```
+
+Settings are at the top of `apps-script-docs-creator/15_Single_Document_Generator.js`:
+
+```javascript
+const SINGLE_DOCUMENT_GENERATION = {
+  NIP: "1234567890",
+  TEMPLATE_ID: "Google Docs template id or URL",
+  OUTPUT_FOLDER: ""
+};
+```
+
+`OUTPUT_FOLDER` is optional. When blank, the PDF is saved under `Files_Single_Generations_/YYYY-MM-DD`. A custom value may be a folder name under the configured onboarding Drive root, a Drive folder ID, or a Drive folder URL. The function finds exactly one main onboarding row by NIP, generates one PDF with the production placeholder engine, and returns the PDF URL and IDs in the execution result. It does not enqueue a job and does not write to AppSheet, statuses, or source sheets.
+
+For programmatic calls, use:
+
+```javascript
+generateSingleDocumentForNip(nip, templateId, outputFolder)
+```

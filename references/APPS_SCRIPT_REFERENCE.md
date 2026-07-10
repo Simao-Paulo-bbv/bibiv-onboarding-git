@@ -125,6 +125,12 @@ Critical guards:
 - `runAuthorizeDocGeneratorSheetAccess()` — checks SpreadsheetApp access to the main onboarding sheet.
 - `runManualGenerateTemplatePdfs()` — manual one-off PDF generator for selected `Onboarding_ID` values, selected output folder, and selected template doc. Creates dated subfolders `YYYY-MM-DD__vN` and uses the same naming pattern as the main flow.
 
+### `apps-script-docs-creator/15_Single_Document_Generator.js`
+- `runGenerateSingleDocumentForNip()` — independent one-PDF generation configured by NIP, template ID, and optional output folder.
+- Blank output folder uses `Files_Single_Generations_`; every PDF is placed in its `YYYY-MM-DD` subfolder.
+- Custom folder accepts a name under the onboarding Drive root, a Drive folder ID, or a Drive folder URL.
+- Reads the main row by header name and NIP; it does not invoke the queue, AppSheet, or status updates.
+
 ## Critical invariants
 
 1. **Status protection** — `WRITE_STATUS_JUST_IN_TIME=true`. Never persist `Init` locally; once AppSheet has the row, it owns Status.
