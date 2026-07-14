@@ -6,6 +6,7 @@
     "BIBIV_onboarding_APP": {
       "role": "Main onboarding case row",
       "key_columns": ["ID", "Status", "NIP_Control"],
+      "document_control_columns": ["Lead Created", "Bank aproval", "Documents sent to client", "Documents sent to bank", "Documents signed by bank", "Credentials"],
       "generation_columns": ["Is_Generating_Now", "Generation_Triggered_By", "Generation_Requested_By", "Generation_Queued_At", "Generation_Started_At", "Generation_Finished_At"],
       "person_refs": ["ContactPersonID", "ManagerPersonID", "BeneficialOwnerPersonID"],
       "important_statuses": ["New", "In progress", "Preparing applications", "Applications Generated", "Preparing documents", "Agreements Generated", "Sending documents", "Waiting for client signature", "Sending signed documents", "Active"]

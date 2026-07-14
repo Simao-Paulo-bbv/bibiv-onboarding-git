@@ -7,10 +7,11 @@ The Apps Script source is clasp-managed. Push with `clasp push`.
 ### `00_Config.js` — central config
 - `CONFIG` — all runtime constants (spreadsheet IDs, timeouts, feature toggles).
 - `HEADER_ALIASES` — Squarespace column rename map. **Aliases are parallel** — either form is read; renames in Squarespace don't break the script.
-- `APPSHEET_SCHEMA` — 47 columns. New columns are always appended to the end.
+- `APPSHEET_SCHEMA` — 63 API columns including `_RowNumber`, corresponding to 62 physical main-sheet columns. Mapping is header-based; existing columns must never be shifted automatically.
 - `DEST_SCHEMA` — DEST sheet schema; same additivity rule.
 - `APPSHEET_MAIN_ALLOWED_COLS` — payload allowlist enforced by `filterPayloadForAppSheet_`.
 - `SYSTEM_DEFAULTS` — fallback values for required fields.
+- Workflow columns `Documents signed by bank` and `Credentials` follow `Documents sent to bank`. `Documents signed by bank` is normalized as Yes/No; `Credentials` is passed through without type coercion and redacted from AppSheet request/response logs.
 - AppSheet creds:
   - `APPSHEET_APP_ID = "ebb1aa13-9408-4a7d-8d41-8cb03b9e766f"`
   - `APPSHEET_TABLE_MAIN = "BIBIV_onboarding_APP"`
@@ -62,6 +63,7 @@ Critical guards:
   - Header: `ApplicationAccessKey`
   - Body: `{ Action: "Add"|"Edit", Properties: { Locale: "pl-PL", Timezone }, Rows: [row] }`
 - `isAppSheetSchemaMismatchBody_` — detects "mismatch in number of columns" / "regenerate the table column structure" responses → marker `APPSHEET_SCHEMA_MISMATCH`.
+- AppSheet log previews recursively redact `Credentials`; the actual API payload is unchanged.
 
 ### `06_MF_API.js`
 - Order: **REGON (by NIP, mandatory) → VAT → IBAN → KNF/RPK**.

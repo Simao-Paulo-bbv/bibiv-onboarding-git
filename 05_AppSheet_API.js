@@ -31,7 +31,7 @@ function callAppSheet_(runId, tableName, rowPayload, action, rowNum) {
       rowNum,
       tableName,
       action: body.Action,
-      payloadPreview: JSON.stringify(rowPayload).slice(0, CONFIG.MAX_PAYLOAD_PREVIEW_CHARS),
+      payloadPreview: JSON.stringify(redactSensitiveAppSheetLogData_(rowPayload)).slice(0, CONFIG.MAX_PAYLOAD_PREVIEW_CHARS),
     });
   } else {
     log_(runId, "INFO", "APPSHEET_REQUEST", { rowNum, tableName, action: body.Action });
@@ -51,27 +51,29 @@ function callAppSheet_(runId, tableName, rowPayload, action, rowNum) {
   const parsed = safeJsonParse_(text);
 
   const headers = safeHeaders_(res.getAllHeaders ? res.getAllHeaders() : {});
-const bodyLen = text.length;
-const maxFull = CONFIG.MAX_APPSHEET_LOG_BODY_CHARS || CONFIG.MAX_RESPONSE_SNIPPET_CHARS || 4000;
-const fullPreview = (bodyLen <= maxFull) ? text : (text.slice(0, maxFull) + `…(truncated, len=${bodyLen})`);
+  const safeLogText = redactSensitiveAppSheetLogText_(text);
+  const bodyLen = text.length;
+  const maxFull = CONFIG.MAX_APPSHEET_LOG_BODY_CHARS || CONFIG.MAX_RESPONSE_SNIPPET_CHARS || 4000;
+  const fullPreview = (safeLogText.length <= maxFull)
+    ? safeLogText
+    : (safeLogText.slice(0, maxFull) + `…(truncated, len=${safeLogText.length})`);
 
-// Always log httpCode. Log full body only in VERBOSE or when non-200.
-if (isVerbose_() || httpCode !== 200) {
-  log_(runId, "INFO", "APPSHEET_RESPONSE", {
-    rowNum,
-    tableName,
-    httpCode,
-    headers,
-    bodyLen,
-    body: fullPreview,
-  });
-} else {
-  log_(runId, "INFO", "APPSHEET_RESPONSE", { rowNum, tableName, httpCode });
-}
-
+  // Always log httpCode. Log full body only in VERBOSE or when non-200.
+  if (isVerbose_() || httpCode !== 200) {
+    log_(runId, "INFO", "APPSHEET_RESPONSE", {
+      rowNum,
+      tableName,
+      httpCode,
+      headers,
+      bodyLen,
+      body: fullPreview,
+    });
+  } else {
+    log_(runId, "INFO", "APPSHEET_RESPONSE", { rowNum, tableName, httpCode });
+  }
 
   if (httpCode !== 200) {
-    const err = new Error(`AppSheet httpCode=${httpCode} body=${text.slice(0, 900)}`);
+    const err = new Error(`AppSheet httpCode=${httpCode} body=${safeLogText.slice(0, 900)}`);
     if (isAppSheetSchemaMismatchBody_(text)) {
       err.code = "APPSHEET_SCHEMA_MISMATCH";
     }
@@ -81,6 +83,36 @@ if (isVerbose_() || httpCode !== 200) {
     throw new Error(`AppSheet Success=false: ${parsed.ErrorDescription || parsed.Error || "unknown"}`);
   }
   return { httpCode, parsed };
+}
+
+function redactSensitiveAppSheetLogText_(text) {
+  const raw = String(text || "");
+  const parsed = safeJsonParse_(raw);
+  if (parsed == null) {
+    return raw.replace(/("Credentials"\s*:\s*")[^"]*(")/gi, "$1[REDACTED]$2");
+  }
+  try {
+    return JSON.stringify(redactSensitiveAppSheetLogData_(parsed));
+  } catch (e) {
+    return "[RESPONSE_REDACTED]";
+  }
+}
+
+function redactSensitiveAppSheetLogData_(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => redactSensitiveAppSheetLogData_(item));
+  }
+  if (!value || typeof value !== "object") return value;
+
+  const out = {};
+  Object.keys(value).forEach(key => {
+    if (String(key || "").trim().toLowerCase() === "credentials") {
+      out[key] = "[REDACTED]";
+    } else {
+      out[key] = redactSensitiveAppSheetLogData_(value[key]);
+    }
+  });
+  return out;
 }
 
 function isAppSheetSchemaMismatchBody_(bodyText) {

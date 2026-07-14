@@ -95,7 +95,8 @@ function normalizeForAppSheet_(col, v) {
     "Lead Created": true,
     "Bank aproval": true,
     "Documents sent to client": true,
-    "Documents sent to bank": true
+    "Documents sent to bank": true,
+    "Documents signed by bank": true
   };
 
   if (yesNoCols[colName]) {

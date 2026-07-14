@@ -15,7 +15,7 @@
 ## Tables
 
 ### `BIBIV_onboarding_APP` (main)
-The main onboarding record. Apps Script Adds new rows after MF enrichment. Columns mirror `APPSHEET_SCHEMA` in `00_Config.js` (47 cols incl. trailing bank-meta + sales-rep fields). Allowed payload columns are gated by `APPSHEET_MAIN_ALLOWED_COLS`. Refs to People_List: `MAIN_REF_COLS = { CONTACT, MANAGER, BENEFICIAL }`.
+The main onboarding record. Apps Script Adds new rows after MF enrichment. Its 62 physical columns mirror `DEST_SCHEMA` in `00_Config.js` (`APPSHEET_SCHEMA` additionally contains virtual `_RowNumber`). Allowed payload columns are gated by `APPSHEET_MAIN_ALLOWED_COLS`. `Documents signed by bank` and `Credentials` follow `Documents sent to bank`; `KNF_verified` remains the final physical column. Refs to People_List: `MAIN_REF_COLS = { CONTACT, MANAGER, BENEFICIAL }`.
 
 ### `People_List`
 Contact / Manager / Beneficial Owner records. Apps Script Adds via `pushPersonToPeopleList_`. **Treat duplicate-key error as OK** (already exists, deterministic ID guarantees identity). Marker: `MARKERS.PEOPLE_OK = "PEOPLE_OK"`.
