@@ -7,7 +7,7 @@ The Apps Script source is clasp-managed. Push with `clasp push`.
 ### `00_Config.js` — central config
 - `CONFIG` — all runtime constants (spreadsheet IDs, timeouts, feature toggles).
 - `HEADER_ALIASES` — Squarespace column rename map. **Aliases are parallel** — either form is read; renames in Squarespace don't break the script.
-- `APPSHEET_SCHEMA` — 63 API columns including `_RowNumber`, corresponding to 62 physical main-sheet columns. Mapping is header-based; existing columns must never be shifted automatically.
+- `APPSHEET_SCHEMA` — 64 API columns including `_RowNumber`, corresponding to 63 physical main-sheet columns. Mapping is header-based; existing columns must never be shifted automatically. `companyType` follows `name_api`.
 - `DEST_SCHEMA` — DEST sheet schema; same additivity rule.
 - `APPSHEET_MAIN_ALLOWED_COLS` — payload allowlist enforced by `filterPayloadForAppSheet_`.
 - `SYSTEM_DEFAULTS` — fallback values for required fields.
@@ -70,6 +70,8 @@ Critical guards:
 - Endpoints under `gov.api.hypnotype.com`.
 - VAT retry strategy: today's date, then no date.
 - Not-VAT path: `subject:null` from REGON → write `statusVat="Not VAT"`, build `residenceAddress` from REGON: `"Ulica NrNier NrNier/NrLok, KodPocztowy Miejscowosc"`. Skip VAT/IBAN.
+- REGON company type: search identifies REGON/type/silo, then a detailed report supplies the official legal form. `companyType` is non-blocking and header-addressed.
+- Manual company-type maintenance: `runManualAuditCompanyType()` is read-only; `runManualRefreshCompanyType()` fills only blanks; targeted NIPs use `MANUAL_COMPANY_TYPE_REFRESH` + `runManualRefreshCompanyTypeForNips()`; overwrite requires the explicit `runManualRefreshCompanyTypeForceAll()`.
 - IBAN cache: `CacheService.getScriptCache()` keyed by account number. Skipped entirely if full bank meta already on row.
 - IBAN skipped on hard REGON/VAT error.
 - VAT calls use GOV API only; no direct MF/relay fallback remains in the Apps Script.

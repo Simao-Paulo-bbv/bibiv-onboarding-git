@@ -10,6 +10,8 @@ Four endpoints, called in this **fixed order** per row:
 - **REGON accepts NIP** — start here, not from VAT.
 - If REGON returns an HTTP/fetch/no-data error, stop the row, mark `MF_REGON_BLOCK`, and set `Status = "need verification"`.
 - `name_api` is sourced from REGON. If REGON returns a valid row but no name, source-sheet `nazwa firmy` is the last-resort fallback.
+- `companyType` is sourced from the REGON detailed report (`POST /v1/regon/report`), never inferred from the company name. Legal entities use `BIR11OsPrawna` and its official `praw_szczegolnaFormaPrawna_*` fields; physical-person reports resolve to `JDG`. A detailed-report failure is non-blocking for the initial import.
+- Confirmed production examples: special-form symbol `117` resolves to `spółka z o.o.`, symbol `019` to `spółka cywilna`, and a successful `BIR11OsFizycznaDzialalnosc*` report to `JDG`. Unknown official forms are retained as the lower-case official REGON name instead of being guessed.
 
 ### VAT
 - Input: NIP (+ optional date).

@@ -20,6 +20,7 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
   let nameFromRegon = "";
   let regonFromRegon = "";
   let residenceFromRegon = "";
+  let companyTypeFromRegon = "";
   let regonHttpCode = 0;
   if (hasGovConfig) {
     try {
@@ -43,12 +44,28 @@ function callMfAndWrite_(runId, dest, mapping, rowNum, nip, dateStr) {
         nameFromRegon = pickNameFromRegon_(regonRes.parsed, "", nipClean);
         regonFromRegon = pickRegonFromRegon_(regonRes.parsed, "", nipClean);
         residenceFromRegon = pickResidenceAddressFromRegon_(regonRes.parsed, "", nipClean);
+        if (mapping && mapping.dstIndex && mapping.dstIndex["companyType"] != null) {
+          try {
+            const companyTypeResult = fetchCompanyTypeFromRegonSearch_(runId, regonRes.parsed, nipClean, rowNum);
+            companyTypeFromRegon = companyTypeResult && companyTypeResult.value || "";
+            if (companyTypeFromRegon) {
+              writeIfColExists_(dest, mapping, rowNum, "companyType", companyTypeFromRegon);
+            }
+          } catch (companyTypeError) {
+            log_(runId, "WARN", "GOV_COMPANY_TYPE_NON_BLOCKING_ERROR", {
+              rowNum: rowNum,
+              nip: nipClean,
+              err: String(companyTypeError).slice(0, 500)
+            });
+          }
+        }
         log_(runId, "INFO", "GOV_REGON_OK", {
           rowNum,
           nip: nipClean,
           hasName: !!nameFromRegon,
           hasRegon: !!regonFromRegon,
-          hasResidenceAddress: !!residenceFromRegon
+          hasResidenceAddress: !!residenceFromRegon,
+          hasCompanyType: !!companyTypeFromRegon
         });
       } else {
         log_(runId, "WARN", "GOV_REGON_HTTP", { rowNum, httpCode: regonRes.httpCode, nip: nipClean });
@@ -329,6 +346,214 @@ function fetchGovApiGet_(path, query) {
 
   const body = res.getContentText() || "";
   return { httpCode: res.getResponseCode(), body: body, parsed: safeJsonParse_(body) };
+}
+
+function fetchGovApiPost_(path, payload) {
+  const base = String((CONFIG && CONFIG.GOV_API_BASE_URL) || "").trim().replace(/\/+$/, "");
+  const key = String((CONFIG && CONFIG.GOV_API_KEY) || "").trim();
+  const p = String(path || "").trim();
+  const res = UrlFetchApp.fetch(base + p, {
+    method: "post",
+    muteHttpExceptions: true,
+    followRedirects: true,
+    contentType: "application/json",
+    validateHttpsCertificates: true,
+    timeout: (CONFIG && CONFIG.GOV_TIMEOUT_MS) || 20000,
+    headers: { "X-API-Key": key, Accept: "application/json" },
+    payload: JSON.stringify(payload || {})
+  });
+
+  const body = res.getContentText() || "";
+  return { httpCode: res.getResponseCode(), body: body, parsed: safeJsonParse_(body) };
+}
+
+function fetchCompanyTypeByNip_(runId, nip, rowNum) {
+  const nipClean = normalizeNipForApi_(nip);
+  if (!nipClean) return { ok: false, value: "", reason: "NO_NIP" };
+
+  try {
+    const search = fetchGovApiWithServerRetries_(runId, "GOV_COMPANY_TYPE_SEARCH", function () {
+      return fetchGovApiGet_(CONFIG.GOV_REGON_PATH, { nip: nipClean });
+    }, { rowNum: rowNum || 0, nip: nipClean });
+    if (!search || search.httpCode !== 200) {
+      return { ok: false, value: "", reason: "SEARCH_HTTP_" + String(search && search.httpCode || 0) };
+    }
+    return fetchCompanyTypeFromRegonSearch_(runId, search.parsed, nipClean, rowNum);
+  } catch (e) {
+    log_(runId, "WARN", "GOV_COMPANY_TYPE_FETCH_ERROR", {
+      rowNum: rowNum || 0,
+      nip: nipClean,
+      err: String(e).slice(0, 500)
+    });
+    return { ok: false, value: "", reason: "FETCH_ERROR" };
+  }
+}
+
+function fetchCompanyTypeFromRegonSearch_(runId, parsed, nip, rowNum) {
+  const nipClean = normalizeNipForApi_(nip);
+  const row = pickBestRegonRow_(parsed, "", nipClean);
+  if (!row) return { ok: false, value: "", reason: "NO_REGON_ROW" };
+
+  const regon = normalizeRegonQueryValue_(row.Regon || row.regon);
+  const typ = String(row.Typ || row.typ || "").trim().toUpperCase();
+  const silosId = String(row.SilosID || row.silosId || row.silosID || "").trim();
+  if (!regon) return { ok: false, value: "", reason: "NO_REGON" };
+
+  const reportNames = getCompanyTypeReportNames_(typ, silosId);
+  for (let i = 0; i < reportNames.length; i++) {
+    const reportName = reportNames[i];
+    const report = fetchGovApiWithServerRetries_(runId, "GOV_COMPANY_TYPE_REPORT", function () {
+      return fetchGovApiPost_(CONFIG.GOV_REGON_REPORT_PATH, {
+        regon: regon,
+        report_name: reportName
+      });
+    }, {
+      rowNum: rowNum || 0,
+      nip: nipClean,
+      regon: regon,
+      reportName: reportName
+    });
+
+    if (!report || report.httpCode !== 200) {
+      log_(runId, "WARN", "GOV_COMPANY_TYPE_REPORT_HTTP", {
+        rowNum: rowNum || 0,
+        nip: nipClean,
+        regon: regon,
+        reportName: reportName,
+        httpCode: report && report.httpCode || 0
+      });
+      continue;
+    }
+
+    const value = pickCompanyTypeFromRegonReport_(report.parsed, reportName);
+    if (value) {
+      log_(runId, "INFO", "GOV_COMPANY_TYPE_OK", {
+        rowNum: rowNum || 0,
+        nip: nipClean,
+        regon: regon,
+        reportName: reportName,
+        companyType: value
+      });
+      return { ok: true, value: value, regon: regon, reportName: reportName };
+    }
+  }
+
+  log_(runId, "WARN", "GOV_COMPANY_TYPE_NO_DATA", {
+    rowNum: rowNum || 0,
+    nip: nipClean,
+    regon: regon,
+    typ: typ,
+    silosId: silosId
+  });
+  return { ok: false, value: "", regon: regon, reason: "NO_COMPANY_TYPE" };
+}
+
+function fetchGovApiWithServerRetries_(runId, eventName, requestFn, context) {
+  const maxAttempts = Math.max(1, Number((CONFIG && CONFIG.GOV_REGON_MAX_ATTEMPTS) || 3));
+  let result = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    result = requestFn();
+    if (!result || result.httpCode < 500 || attempt >= maxAttempts) break;
+    log_(runId, "WARN", eventName + "_RETRYABLE_HTTP", Object.assign({}, context || {}, {
+      attempt: attempt,
+      httpCode: result.httpCode
+    }));
+    Utilities.sleep(Math.min(5000, 750 * attempt));
+  }
+  return result;
+}
+
+function getCompanyTypeReportNames_(typ, silosId) {
+  if (String(typ || "").toUpperCase() === "P" || String(silosId || "") === "6") {
+    return ["BIR11OsPrawna"];
+  }
+
+  // Physical-person silos use separate detailed reports. CEIDG is by far the
+  // common path; the remaining official reports are safe fallbacks for other silos.
+  return [
+    "BIR11OsFizycznaDzialalnoscCeidg",
+    "BIR11OsFizycznaDzialalnoscRolnicza",
+    "BIR11OsFizycznaDzialalnoscPozostala",
+    "BIR11OsFizycznaDzialalnoscSkreslona"
+  ];
+}
+
+function pickCompanyTypeFromRegonReport_(parsed, reportName) {
+  const rows = parsed && Array.isArray(parsed.data)
+    ? parsed.data
+    : (parsed && Array.isArray(parsed.results) ? parsed.results : []);
+  if (!rows.length) return "";
+
+  const row = rows[0] || {};
+  const officialName = String(
+    row.praw_szczegolnaFormaPrawna_Nazwa ||
+    row.szczegolnaFormaPrawna_Nazwa ||
+    row.SzczegolnaFormaPrawna_Nazwa ||
+    ""
+  ).trim();
+  const symbol = String(
+    row.praw_szczegolnaFormaPrawna_Symbol ||
+    row.szczegolnaFormaPrawna_Symbol ||
+    row.SzczegolnaFormaPrawna_Symbol ||
+    ""
+  ).trim();
+
+  if (officialName || symbol) return normalizeCompanyType_(officialName, symbol);
+  if (String(reportName || "").indexOf("OsFizycznaDzialalnosc") >= 0) return "JDG";
+  return "";
+}
+
+function normalizeCompanyType_(officialName, symbol) {
+  const code = String(symbol || "").trim();
+  const name = String(officialName || "").trim();
+  const upper = name.toUpperCase();
+  const bySymbol = {
+    "019": "spółka cywilna",
+    "117": "spółka z o.o."
+  };
+  if (bySymbol[code]) return bySymbol[code];
+  if (upper.indexOf("PROSTE SPÓŁKI AKCYJNE") >= 0) return "prosta spółka akcyjna";
+  if (upper.indexOf("SPÓŁKI CYWILNE") >= 0) return "spółka cywilna";
+  if (upper.indexOf("SPÓŁKI Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ") >= 0) return "spółka z o.o.";
+  if (upper.indexOf("SPÓŁKI KOMANDYTOWO-AKCYJNE") >= 0) return "spółka komandytowo-akcyjna";
+  if (upper.indexOf("SPÓŁKI KOMANDYTOWE") >= 0) return "spółka komandytowa";
+  if (upper.indexOf("SPÓŁKI PARTNERSKIE") >= 0) return "spółka partnerska";
+  if (upper.indexOf("SPÓŁKI JAWNE") >= 0) return "spółka jawna";
+  if (upper.indexOf("SPÓŁKI AKCYJNE") >= 0) return "spółka akcyjna";
+  if (upper.indexOf("FUNDACJE") >= 0) return "fundacja";
+  if (upper.indexOf("STOWARZYSZENIA") >= 0) return "stowarzyszenie";
+  return name ? name.toLowerCase() : "";
+}
+
+function pickBestRegonRow_(parsed, regonClean, nipClean) {
+  try {
+    const rows =
+      (parsed && parsed.results) ||
+      (parsed && parsed.data && parsed.data.results) ||
+      (parsed && parsed.data && Array.isArray(parsed.data) ? parsed.data : null) ||
+      [];
+    if (!rows || !rows.length) return null;
+
+    const targetRegon = normalizeRegonQueryValue_(regonClean);
+    const targetNip = normalizeNipForApi_(nipClean);
+    let best = null;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      const rowRegon = normalizeRegonQueryValue_(row.Regon || row.regon);
+      const rowNip = normalizeNipForApi_(row.Nip || row.nip);
+      const typ = String(row.Typ || row.typ || "").trim().toUpperCase();
+      const score =
+        (rowRegon && targetRegon && rowRegon === targetRegon ? 200 : 0) +
+        (rowNip && targetNip && rowNip === targetNip ? 120 : 0) +
+        (rowRegon ? 2 : 0) +
+        (typ === "P" ? 10 : 0) +
+        (typ === "LP" ? 5 : 0);
+      if (!best || score > best.score) best = { score: score, row: row };
+    }
+    return best ? best.row : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 function writeKnfVerifiedForRow_(runId, dest, mapping, rowNum, nip, options) {

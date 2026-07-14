@@ -83,7 +83,7 @@ Primary status invariant: the import processor sends an initial `Status` only on
 | `03_Import.js` | SOURCE → DEST import with dedupe + `_Import_History` hidden sheet |
 | `04_Process.js` | Core pipeline: ID → MF → Bank_Accounts → People_List refs → AppSheet Add/Edit |
 | `05_AppSheet_API.js` | REST v2 caller, payload allowlist, schema-mismatch detection |
-| `06_MF_API.js` | REGON → VAT → IBAN → KNF/RPK order, Not-VAT fast path, IBAN cache |
+| `06_MF_API.js` | REGON search + detailed legal form (`companyType`) → VAT → IBAN → KNF/RPK order, Not-VAT fast path, IBAN cache |
 | `07_Payload_And_Normalization.js` | Build & normalize AppSheet payload (NIP/KRS/REGON, dates, phone, accountNumbers) |
 | `08_ID_And_Dedupe_Time.js` | Onboarding_ID assignment, time helpers |
 | `09_Logging.js` | Logger + sync_status marker append |
@@ -91,7 +91,7 @@ Primary status invariant: the import processor sends an initial `Status` only on
 | `11_Bank_Accounts.js` | Child table sync to AppSheet `Bank_Accounts` |
 | `12_Backfill_Existing.js` | Toggle-controlled backfill for legacy rows; currently OFF after representative-field catch-up |
 | `13_Name_Api_Refresh.js` | Maintenance-only refresh for historical `name_api`; updates only that column |
-| `14_Manual_Maintenance.js` | Manual repair helpers, including IBAN bank metadata refresh for sheet + AppSheet |
+| `14_Manual_Maintenance.js` | Manual repair helpers, including IBAN metadata and safe `companyType` audit/backfill |
 | `apps-script-docs-creator/` | Standalone Apps Script `BIBIV_Onboarding_DocsCreator` for Agreement PDFs |
 
 ## External services
@@ -103,7 +103,7 @@ Primary status invariant: the import processor sends an initial `Status` only on
 ## Critical invariants (do not violate)
 
 1. **Status protection** — Once AppSheet has a row, AppSheet owns `Status`. Apps Script writes Status only Just-In-Time on a truly fresh row (blank live status + `idAssignedNow`). Never overwrite an external-managed status.
-2. **Schema additivity** — New DEST columns are always appended to the end. Never reorder. `repairDestHeadersOnlyAfterQueueInsert` is non-destructive.
+2. **Schema additivity** — Never reorder or truncate existing DEST data. Schema checks locate columns by exact header and add only a genuinely missing column at its declared neighbour. `repairDestHeadersOnlyAfterQueueInsert` is non-destructive.
 3. **Dedupe key** — `(NIP, SubmittedOn)`, persisted in hidden `_Import_History` sheet. Survives DEST row deletions.
 4. **Deterministic PersonID** — `"P_" + base64(SHA256(onboardingId|role|fullName)).slice(0,22)`. Same person always gets the same key across re-imports.
 5. **Folder paths in AppSheet** — `Folder_Path` is a constant root (`Files_Application_` or `Files_Agreements_`); NIP is a separate subfolder; formulas always use explicit `"/"` separators.
@@ -113,6 +113,7 @@ Primary status invariant: the import processor sends an initial `Status` only on
 9. **`name_api` refresh is isolated** — `runRefreshNameApiOnly()` updates only `name_api` from REGON/GOV. It must not run import/AppSheet/People/bank logic.
 10. **GOV enrichment status gate** — regular GOV/MF enrichment runs only while `Status = "Init"`; later AppSheet workflow/status changes must not re-run GOV or overwrite `name_api`.
 11. **`name_api` source is REGON** — never derive `name_api` from VAT subject names. Regular VAT enrichment must use GOV API only.
+12. **`companyType` source is REGON detail** — never infer legal form from the company name. A detail-report outage is non-blocking; manual backfill fills blanks unless force overwrite is explicitly selected.
 
 ## Key reference docs in this folder
 

@@ -294,6 +294,7 @@ MF/API enrichment columns:
 
 ```text
 name_api
+companyType
 statusVat
 regon
 krs

@@ -6,6 +6,7 @@
     "BIBIV_onboarding_APP": {
       "role": "Main onboarding case row",
       "key_columns": ["ID", "Status", "NIP_Control"],
+      "regon_enrichment_columns": ["name_api", "companyType", "statusVat", "regon", "krs", "registrationLegalDate", "workingAddress", "residenceAddress", "accountNumbers"],
       "document_control_columns": ["Lead Created", "Bank aproval", "Documents sent to client", "Documents sent to bank", "Documents signed by bank", "Credentials"],
       "generation_columns": ["Is_Generating_Now", "Generation_Triggered_By", "Generation_Requested_By", "Generation_Queued_At", "Generation_Started_At", "Generation_Finished_At"],
       "person_refs": ["ContactPersonID", "ManagerPersonID", "BeneficialOwnerPersonID"],
@@ -128,6 +129,7 @@
     "Historical company-name correction is isolated in runRefreshNameApiOnly() and controlled by CONFIG.NAME_API_REFRESH_ENABLED. It overwrites only BIBIV_onboarding_APP/DEST name_api from REGON/GOV and does not run import, AppSheet, People, Bank_Accounts, or status logic. CONFIG.NAME_API_REFRESH_FROM_LIST=true restricts the run to CONFIG.NAME_API_REFRESH_TARGET_NIPS; false runs all rows within the configured scan/row limits.",
     "Regular GOV/MF enrichment is gated by CONFIG.GOV_ENRICH_ONLY_STATUS_INIT=true. New imports receive Status=Init, and existing rows with blank or workflow statuses must not re-run GOV/MF or overwrite name_api.",
     "name_api must come from REGON/GOV, not from VAT subject.name. Regular REGON, VAT, and IBAN enrichment uses GOV API only; direct MF and relay fallback paths have been removed from the Apps Script.",
+    "companyType follows name_api in the 63-column physical main table and is populated only from the detailed REGON report. Verified mappings include JDG from physical-person activity reports, special-form symbol 117 as spółka z o.o., and symbol 019 as spółka cywilna. Detailed-report failures are non-blocking. runManualAuditCompanyType is read-only; runManualRefreshCompanyType fills blanks only; force overwrite is explicit.",
     "Persistent REGON hard failures marked with MF_REGON_BLOCK are moved to Status = need verification so the row waits for manual review instead of being retried forever.",
     "Generation_Job_Items uses Initial value for Job_Item_ID, Job_ID, Item_Status/Created_At and App formula for Onboarding_ID, NIP_Control, template-derived fields, File_Name, and File.",
     "The old full webhook body with inline File/File_Name CONCATENATE expressions should be treated as superseded because it can trigger AppSheet quote parsing errors."

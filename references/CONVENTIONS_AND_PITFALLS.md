@@ -143,3 +143,5 @@
 ### "Apps Script broke after I added a column in AppSheet"
 - Don't reorder DEST. Add the new column at the END of `DEST_SCHEMA` and `APPSHEET_SCHEMA`.
 - If `APPSHEET_MAIN_ALLOWED_COLS` gates payload, add the column there too.
+- `companyType` is populated only from a REGON detailed report. Never infer it from `name_api`/`nazwa firmy`; detailed-report failure must remain non-blocking.
+- Historical `companyType` backfill fills blanks by default and writes only that header-addressed column. Run `runManualAuditCompanyType()` before a broad write; overwriting existing values requires the explicit force function.

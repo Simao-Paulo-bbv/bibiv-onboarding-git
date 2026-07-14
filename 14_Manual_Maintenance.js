@@ -21,6 +21,13 @@ const MANUAL_KNF_VERIFICATION = {
   MAX_ROWS: 250
 };
 
+const MANUAL_COMPANY_TYPE_REFRESH = {
+  NIPS_TEXT: "",
+  NIPS: [],
+  OVERWRITE_EXISTING: false,
+  MAX_ROWS: 100
+};
+
 function runManualRefreshIbanBankMetadata() {
   return refreshIbanBankMetadataRows_({
     forceAllRows: false,
@@ -126,6 +133,194 @@ function runManualRefreshKnfVerifiedForceAll() {
     overwriteExisting: true,
     maxRows: MANUAL_KNF_VERIFICATION.MAX_ROWS || 250
   });
+}
+
+function runManualAuditCompanyType() {
+  return refreshCompanyTypeRows_({
+    dryRun: true,
+    overwriteExisting: false,
+    maxRows: MANUAL_COMPANY_TYPE_REFRESH.MAX_ROWS || 100
+  });
+}
+
+function runManualRefreshCompanyType() {
+  return refreshCompanyTypeRows_({
+    dryRun: false,
+    overwriteExisting: false,
+    maxRows: MANUAL_COMPANY_TYPE_REFRESH.MAX_ROWS || 100
+  });
+}
+
+function runManualRefreshCompanyTypeForNips() {
+  return refreshCompanyTypeRows_({
+    dryRun: false,
+    overwriteExisting: !!MANUAL_COMPANY_TYPE_REFRESH.OVERWRITE_EXISTING,
+    maxRows: MANUAL_COMPANY_TYPE_REFRESH.MAX_ROWS || 100,
+    targetNips: getManualCompanyTypeNips_()
+  });
+}
+
+function runManualRefreshCompanyTypeForNipsText(nipsText, overwriteExistingArg) {
+  return refreshCompanyTypeRows_({
+    dryRun: false,
+    overwriteExisting: overwriteExistingArg === true,
+    maxRows: MANUAL_COMPANY_TYPE_REFRESH.MAX_ROWS || 100,
+    targetNips: parseManualCompanyTypeNips_(nipsText)
+  });
+}
+
+function runManualRefreshCompanyTypeForceAll() {
+  return refreshCompanyTypeRows_({
+    dryRun: false,
+    overwriteExisting: true,
+    maxRows: MANUAL_COMPANY_TYPE_REFRESH.MAX_ROWS || 100
+  });
+}
+
+function getManualCompanyTypeNips_() {
+  return parseManualCompanyTypeNips_(
+    String(MANUAL_COMPANY_TYPE_REFRESH.NIPS_TEXT || "") + " " +
+      (Array.isArray(MANUAL_COMPANY_TYPE_REFRESH.NIPS) ? MANUAL_COMPANY_TYPE_REFRESH.NIPS.join(" ") : "")
+  );
+}
+
+function parseManualCompanyTypeNips_(nipsText) {
+  const out = {};
+  String(nipsText || "")
+    .split(/[\s,;]+/)
+    .forEach(function (value) {
+      const nip = normalizeNipForApi_(value);
+      if (nip) out[nip] = true;
+    });
+  if (!Object.keys(out).length) {
+    throw new Error("Set MANUAL_COMPANY_TYPE_REFRESH.NIPS_TEXT or NIPS.");
+  }
+  return out;
+}
+
+function refreshCompanyTypeRows_(options) {
+  options = options || {};
+  const runId = makeRunId_("manual-company-type");
+  const startedAt = Date.now();
+  const maxRuntimeMs = Math.max(10000, Number(options.maxRuntimeMs || 300000));
+  const maxRows = Math.max(1, Number(options.maxRows || 100));
+  const overwriteExisting = !!options.overwriteExisting;
+  const dryRun = !!options.dryRun;
+  const targetNips = options.targetNips || null;
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(CONFIG.LOCK_TIMEOUT_MS || 20000)) {
+    log_(runId, "WARN", "MANUAL_COMPANY_TYPE_LOCK_NOT_ACQUIRED", {});
+    return { ok: false, reason: "LOCK_NOT_ACQUIRED" };
+  }
+
+  try {
+    const sourceSS = openSpreadsheetWithLog_(runId, CONFIG.SOURCE_SPREADSHEET_ID, "SOURCE_SPREADSHEET_ID");
+    const destSS = openSpreadsheetWithLog_(runId, CONFIG.DEST_SPREADSHEET_ID, "DEST_SPREADSHEET_ID");
+    const source = getSheet_(sourceSS, CONFIG.SOURCE_SHEET_NAME, false);
+    const dest = getSheet_(destSS, CONFIG.DEST_SHEET_NAME, false);
+    if (!source || !dest) throw new Error("Source or destination sheet missing.");
+
+    if (!dryRun && CONFIG.FEATURES.ENFORCE_DEST_HEADERS) enforceDestHeaders_(runId, dest);
+    const mapping = buildMapping_(runId, source, dest);
+    validateManualCompanyTypeColumns_(mapping);
+    const result = refreshCompanyTypeRowsInSheet_(runId, dest, mapping, {
+      startedAt: startedAt,
+      maxRuntimeMs: maxRuntimeMs,
+      maxRows: maxRows,
+      overwriteExisting: overwriteExisting,
+      dryRun: dryRun,
+      targetNips: targetNips
+    });
+
+    log_(runId, "INFO", "MANUAL_COMPANY_TYPE_REFRESH_END", Object.assign({}, result, {
+      overwriteExisting: overwriteExisting,
+      dryRun: dryRun,
+      targeted: !!targetNips,
+      elapsedMs: Date.now() - startedAt
+    }));
+    return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function validateManualCompanyTypeColumns_(mapping) {
+  const required = ["ID", "NIP_Control", "nip", "companyType"];
+  const missing = required.filter(function (name) { return mapping.dstIndex[name] == null; });
+  if (missing.length) {
+    throw new Error("Missing destination columns for companyType refresh: " + missing.join(", "));
+  }
+}
+
+function refreshCompanyTypeRowsInSheet_(runId, dest, mapping, options) {
+  const out = {
+    ok: true,
+    dryRun: !!options.dryRun,
+    scanned: 0,
+    candidates: 0,
+    apiResolved: 0,
+    updated: 0,
+    skippedNoNip: 0,
+    skippedTarget: 0,
+    skippedAlreadyPresent: 0,
+    unresolved: 0,
+    stoppedEarly: false,
+    preview: []
+  };
+  const lastRow = dest.getLastRow();
+  if (lastRow < 2) return out;
+
+  const idx = {
+    nipControl: mapping.dstIndex["NIP_Control"],
+    nip: mapping.dstIndex["nip"],
+    companyType: mapping.dstIndex["companyType"]
+  };
+  const data = dest.getRange(2, 1, lastRow - 1, dest.getLastColumn()).getValues();
+
+  for (let i = 0; i < data.length; i++) {
+    if (out.candidates >= options.maxRows) break;
+    if (Date.now() - options.startedAt > options.maxRuntimeMs - 15000) {
+      out.stoppedEarly = true;
+      break;
+    }
+
+    const rowNum = i + 2;
+    const row = data[i];
+    out.scanned++;
+    const nip = normalizeNipForApi_(row[idx.nipControl] || row[idx.nip]);
+    if (!nip) {
+      out.skippedNoNip++;
+      continue;
+    }
+    if (options.targetNips && !options.targetNips[nip]) {
+      out.skippedTarget++;
+      continue;
+    }
+
+    const existing = String(row[idx.companyType] || "").trim();
+    if (existing && !options.overwriteExisting) {
+      out.skippedAlreadyPresent++;
+      continue;
+    }
+
+    out.candidates++;
+    const resolved = fetchCompanyTypeByNip_(runId, nip, rowNum);
+    const value = resolved && String(resolved.value || "").trim();
+    if (!resolved || !resolved.ok || !value) {
+      out.unresolved++;
+      continue;
+    }
+
+    out.apiResolved++;
+    if (out.preview.length < 25) out.preview.push({ rowNum: rowNum, nip: nip, companyType: value });
+    if (!options.dryRun) {
+      dest.getRange(rowNum, idx.companyType + 1).setValue(value);
+      out.updated++;
+    }
+  }
+
+  return out;
 }
 
 function getManualKnfVerificationNips_() {
