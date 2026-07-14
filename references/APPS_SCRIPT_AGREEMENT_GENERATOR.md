@@ -369,10 +369,10 @@ TEMPLATE_DOC_ID: "Google Docs template id"
 
 The manual generator is intentionally separate from the main queue. It reads the same onboarding data, creates a dated output folder under the selected root using `YYYY-MM-DD__vN`, and uses the same PDF naming pattern as the main agreement flow.
 
-Single PDF generation by NIP:
+Independent PDF generation by NIP or Onboarding ID:
 
 ```text
-runGenerateSingleDocumentForNip()
+runGenerateSingleDocuments()
 ```
 
 Settings are at the top of `apps-script-docs-creator/15_Single_Document_Generator.js`:
@@ -380,12 +380,21 @@ Settings are at the top of `apps-script-docs-creator/15_Single_Document_Generato
 ```javascript
 const SINGLE_DOCUMENT_GENERATION = {
   NIP: "1234567890",
+  NIPS_TEXT: "0987654321, 1111111111",
+  NIPS: [],
+  ONBOARDING_ID: "",
+  ONBOARDING_IDS_TEXT: "ID00000001\nID00000002",
+  ONBOARDING_IDS: [],
   TEMPLATE_ID: "Google Docs template id or URL",
   OUTPUT_FOLDER: ""
 };
 ```
 
-`OUTPUT_FOLDER` is optional. When blank, the PDF is saved under `Files_Single_Generations_/YYYY-MM-DD`. A custom value may be a folder name under the configured onboarding Drive root, a Drive folder ID, or a Drive folder URL. The function finds exactly one main onboarding row by NIP, generates one PDF with the production placeholder engine, and returns the PDF URL and IDs in the execution result. It does not enqueue a job and does not write to AppSheet, statuses, or source sheets.
+Use any one or several of the NIP and Onboarding ID fields. Text lists accept commas, semicolons, tabs, or new lines. Each resolved entity receives one PDF from the selected template. If the same entity is listed by both NIP and ID, it is generated only once. An invalid or missing list item is reported in the result without stopping valid items.
+
+`OUTPUT_FOLDER` is optional. When blank, PDFs are saved under `Files_Single_Generations_/YYYY-MM-DD`. A custom value may be a folder name under the configured onboarding Drive root, a Drive folder ID, or a Drive folder URL. The function uses the production placeholder engine and returns per-entity PDF URLs and IDs in the execution result. It does not enqueue an agreement job and does not write to AppSheet, statuses, or source sheets.
+
+`runGenerateSingleDocumentForNip()` remains as a backward-compatible alias and uses the same expanded configuration.
 
 For programmatic calls, use:
 

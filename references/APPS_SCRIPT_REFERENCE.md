@@ -126,10 +126,12 @@ Critical guards:
 - `runManualGenerateTemplatePdfs()` — manual one-off PDF generator for selected `Onboarding_ID` values, selected output folder, and selected template doc. Creates dated subfolders `YYYY-MM-DD__vN` and uses the same naming pattern as the main flow.
 
 ### `apps-script-docs-creator/15_Single_Document_Generator.js`
-- `runGenerateSingleDocumentForNip()` — independent one-PDF generation configured by NIP, template ID, and optional output folder.
+- `runGenerateSingleDocuments()` — independent PDF generation for one or many NIPs and/or Onboarding IDs, using one selected template and optional output folder.
+- `runGenerateSingleDocumentForNip()` — backward-compatible alias for the same configuration.
+- Text and array inputs are supported; entities repeated across NIP and ID inputs are deduplicated.
 - Blank output folder uses `Files_Single_Generations_`; every PDF is placed in its `YYYY-MM-DD` subfolder.
 - Custom folder accepts a name under the onboarding Drive root, a Drive folder ID, or a Drive folder URL.
-- Reads the main row by header name and NIP; it does not invoke the queue, AppSheet, or status updates.
+- Reads main rows by header name and NIP/ID; it does not invoke the agreement queue, AppSheet, or status updates.
 
 ## Critical invariants
 

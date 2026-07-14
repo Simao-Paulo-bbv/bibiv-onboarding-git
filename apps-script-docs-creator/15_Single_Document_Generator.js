@@ -1,15 +1,22 @@
 /*******************************************************
- * Independent single-document generation by NIP
+ * Independent document generation by NIP or Onboarding ID
  *
- * Fill the three settings below and run:
- *   runGenerateSingleDocumentForNip
+ * Fill the settings below and run:
+ *   runGenerateSingleDocuments
  *
  * OUTPUT_FOLDER may be blank (default), a folder name,
  * a Google Drive folder ID, or a Google Drive folder URL.
+ * Text lists accept values separated by commas, semicolons,
+ * tabs, or new lines.
  *******************************************************/
 
 const SINGLE_DOCUMENT_GENERATION = {
   NIP: "",
+  NIPS_TEXT: "",
+  NIPS: [],
+  ONBOARDING_ID: "",
+  ONBOARDING_IDS_TEXT: "",
+  ONBOARDING_IDS: [],
   TEMPLATE_ID: "",
   OUTPUT_FOLDER: ""
 };
@@ -17,75 +24,226 @@ const SINGLE_DOCUMENT_GENERATION = {
 const SINGLE_DOCUMENT_DEFAULT_OUTPUT_FOLDER = "Files_Single_Generations_";
 
 function runGenerateSingleDocumentForNip() {
-  return generateSingleDocumentForNip(
-    SINGLE_DOCUMENT_GENERATION.NIP,
-    SINGLE_DOCUMENT_GENERATION.TEMPLATE_ID,
-    SINGLE_DOCUMENT_GENERATION.OUTPUT_FOLDER
-  );
+  return runGenerateSingleDocuments();
+}
+
+function runGenerateSingleDocuments() {
+  return generateSingleDocumentsForEntities_(SINGLE_DOCUMENT_GENERATION);
 }
 
 function generateSingleDocumentForNip(nip, templateId, outputFolder) {
+  const batch = generateSingleDocumentsForEntities_({
+    NIP: nip,
+    TEMPLATE_ID: templateId,
+    OUTPUT_FOLDER: outputFolder
+  });
+  if (!batch.ok) {
+    throw new Error(batch.results[0] && batch.results[0].error || "Single document generation failed.");
+  }
+  return batch.results[0];
+}
+
+function generateSingleDocumentsForEntities_(options) {
   const runId = makeRunId_();
-  const settings = getSingleDocumentGenerationSettings_(nip, templateId, outputFolder);
+  const settings = getSingleDocumentBatchSettings_(options || {});
 
   log_(runId, "INFO", "SINGLE_DOCGEN_START", {
-    nip: settings.nip,
+    nips: settings.nips,
+    onboardingIds: settings.onboardingIds,
     templateId: settings.templateId,
     outputFolder: settings.outputFolder || SINGLE_DOCUMENT_DEFAULT_OUTPUT_FOLDER
   });
 
-  const mainRow = findSingleDocumentMainRowByNip_(runId, settings.nip);
-  const onboardingId = String(getField_(mainRow, "ID") || "").trim();
+  const resolved = resolveSingleDocumentMainRows_(runId, settings);
+  if (!resolved.targets.length) {
+    const message = resolved.failures.map(item => item.error).join(" | ") ||
+      "No onboarding rows were resolved for generation.";
+    log_(runId, "ERROR", "SINGLE_DOCGEN_NO_TARGETS", {
+      failures: resolved.failures
+    });
+    throw new Error(message);
+  }
+
   const templateRow = findManualDocTemplateRow_(runId, settings.templateId);
   const outputRoot = resolveSingleDocumentOutputRoot_(runId, settings.outputFolder);
   const datedFolder = ensureSingleDocumentDateFolder_(runId, outputRoot);
-  const fileRow = buildSingleDocumentFileRow_(
-    runId,
-    mainRow,
-    onboardingId,
-    settings.templateId,
-    datedFolder
-  );
+  const results = resolved.failures.slice();
 
-  const generated = generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow, {
-    outputRootFolder: datedFolder
+  resolved.targets.forEach(target => {
+    const mainRow = target.mainRow;
+    const onboardingId = String(getField_(mainRow, "ID") || "").trim();
+    const nip = normalizeSingleDocumentNip_(getManualNipControl_(mainRow));
+
+    try {
+      const fileRow = buildSingleDocumentFileRow_(
+        runId,
+        mainRow,
+        onboardingId,
+        settings.templateId,
+        datedFolder
+      );
+      const generated = generatePdfForAgreementFileRow_(runId, fileRow, mainRow, templateRow, {
+        outputRootFolder: datedFolder
+      });
+      const item = {
+        ok: true,
+        nip: nip,
+        onboardingId: onboardingId,
+        matchedBy: target.matchedBy,
+        fileName: generated.relativePath,
+        pdfId: generated.pdfId,
+        pdfUrl: generated.pdfUrl
+      };
+      results.push(item);
+      log_(runId, "INFO", "SINGLE_DOCGEN_ITEM_DONE", item);
+    } catch (e) {
+      const item = {
+        ok: false,
+        nip: nip,
+        onboardingId: onboardingId,
+        matchedBy: target.matchedBy,
+        error: e && e.message || String(e)
+      };
+      results.push(item);
+      log_(runId, "ERROR", "SINGLE_DOCGEN_ITEM_FAILED", item);
+    }
   });
 
+  const failed = results.filter(item => !item.ok);
   const result = {
-    ok: true,
-    nip: settings.nip,
-    onboardingId: onboardingId,
+    ok: failed.length === 0,
+    total: results.length,
+    generated: results.length - failed.length,
+    failed: failed.length,
     templateId: settings.templateId,
     outputRootFolderId: outputRoot.getId(),
     outputRootFolderName: outputRoot.getName(),
     datedFolderId: datedFolder.getId(),
     datedFolderName: datedFolder.getName(),
-    fileName: generated.relativePath,
-    pdfId: generated.pdfId,
-    pdfUrl: generated.pdfUrl
+    results: results
   };
 
   log_(runId, "INFO", "SINGLE_DOCGEN_DONE", result);
   return result;
 }
 
-function getSingleDocumentGenerationSettings_(nip, templateId, outputFolder) {
-  const cleanNip = normalizeSingleDocumentNip_(nip);
-  const cleanTemplateId = extractSingleDocumentDriveId_(templateId);
-  const cleanOutputFolder = String(outputFolder || "").trim();
+function getSingleDocumentBatchSettings_(options) {
+  const rawNips = collectSingleDocumentValues_(
+    options.NIP,
+    options.NIPS_TEXT,
+    options.NIPS,
+    false
+  );
+  const nipEntries = rawNips.map(raw => ({
+    raw: raw,
+    normalized: normalizeSingleDocumentNip_(raw)
+  }));
+  const onboardingIds = collectSingleDocumentValues_(
+    options.ONBOARDING_ID,
+    options.ONBOARDING_IDS_TEXT,
+    options.ONBOARDING_IDS,
+    true
+  );
+  const cleanTemplateId = extractSingleDocumentDriveId_(options.TEMPLATE_ID);
+  const cleanOutputFolder = String(options.OUTPUT_FOLDER || "").trim();
 
-  if (!/^\d{10}$/.test(cleanNip)) {
-    throw new Error("SINGLE_DOCUMENT_GENERATION.NIP must contain exactly 10 digits.");
+  const nips = nipEntries
+    .filter(entry => /^\d{10}$/.test(entry.normalized))
+    .map(entry => entry.normalized);
+  const invalidNips = nipEntries
+    .filter(entry => !/^\d{10}$/.test(entry.normalized))
+    .map(entry => entry.raw);
+  if (!rawNips.length && !onboardingIds.length) {
+    throw new Error("Provide at least one NIP or Onboarding ID in SINGLE_DOCUMENT_GENERATION.");
   }
   if (!cleanTemplateId) {
     throw new Error("SINGLE_DOCUMENT_GENERATION.TEMPLATE_ID is blank or invalid.");
   }
 
   return {
-    nip: cleanNip,
+    nips: uniqueSingleDocumentValues_(nips),
+    invalidNips: uniqueSingleDocumentValues_(invalidNips),
+    onboardingIds: uniqueSingleDocumentValues_(onboardingIds),
     templateId: cleanTemplateId,
     outputFolder: cleanOutputFolder
   };
+}
+
+function collectSingleDocumentValues_(singleValue, textValue, arrayValue, splitOnSpaces) {
+  const values = [];
+  const separator = splitOnSpaces ? /[\n,;\t ]+/ : /[\n,;\t]+/;
+
+  [singleValue].concat(String(textValue || "").split(separator), arrayValue || [])
+    .forEach(value => {
+      const clean = String(value || "").trim();
+      if (clean) values.push(clean);
+    });
+  return uniqueSingleDocumentValues_(values);
+}
+
+function uniqueSingleDocumentValues_(values) {
+  const seen = {};
+  return (values || []).filter(value => {
+    const key = String(value || "").trim();
+    if (!key || seen[key]) return false;
+    seen[key] = true;
+    return true;
+  });
+}
+
+function resolveSingleDocumentMainRows_(runId, settings) {
+  const targets = [];
+  const failures = (settings.invalidNips || []).map(nip => ({
+    ok: false,
+    referenceType: "nip",
+    referenceValue: nip,
+    error: "Invalid NIP. Every NIP must contain exactly 10 digits."
+  }));
+  const seenRows = {};
+
+  settings.nips.forEach(nip => {
+    addSingleDocumentResolvedTarget_(runId, targets, failures, seenRows, "nip", nip, () => {
+      return findSingleDocumentMainRowByNip_(runId, nip);
+    });
+  });
+
+  settings.onboardingIds.forEach(onboardingId => {
+    addSingleDocumentResolvedTarget_(runId, targets, failures, seenRows, "onboardingId", onboardingId, () => {
+      return findSingleDocumentMainRowByOnboardingId_(runId, onboardingId);
+    });
+  });
+
+  return { targets: targets, failures: failures };
+}
+
+function addSingleDocumentResolvedTarget_(runId, targets, failures, seenRows, type, value, resolver) {
+  try {
+    const mainRow = resolver();
+    const onboardingId = String(getField_(mainRow, "ID") || "").trim();
+    const nip = normalizeSingleDocumentNip_(getManualNipControl_(mainRow));
+    const dedupeKey = onboardingId ? "id:" + onboardingId : "nip:" + nip;
+
+    if (seenRows[dedupeKey]) {
+      seenRows[dedupeKey].matchedBy.push(type + ":" + value);
+      return;
+    }
+
+    const target = {
+      mainRow: mainRow,
+      matchedBy: [type + ":" + value]
+    };
+    seenRows[dedupeKey] = target;
+    targets.push(target);
+  } catch (e) {
+    const failure = {
+      ok: false,
+      referenceType: type,
+      referenceValue: value,
+      error: e && e.message || String(e)
+    };
+    failures.push(failure);
+    log_(runId, "ERROR", "SINGLE_DOCGEN_TARGET_NOT_RESOLVED", failure);
+  }
 }
 
 function findSingleDocumentMainRowByNip_(runId, nip) {
@@ -128,6 +286,33 @@ function findSingleDocumentMainRowByNip_(runId, nip) {
   log_(runId, "INFO", "SINGLE_DOCGEN_MAIN_ROW_FOUND", {
     nip: nip,
     onboardingId: String(getField_(matches[0], "ID") || "").trim(),
+    sheetName: sheetName
+  });
+  return matches[0];
+}
+
+function findSingleDocumentMainRowByOnboardingId_(runId, onboardingId) {
+  const cleanId = String(onboardingId || "").trim();
+  const sheetName = getSheetNameForDocgenTable_(DOCGEN_TABLES.MAIN);
+  const values = fetchManualSpreadsheetSheetValues_(runId, sheetName);
+  if (!values || values.length < 2) {
+    throw new Error("Main onboarding sheet is empty: " + sheetName);
+  }
+
+  const matches = buildRowsFromValues_(values).filter(row => {
+    return String(getField_(row, "ID") || "").trim() === cleanId;
+  });
+  if (!matches.length) {
+    throw new Error("Onboarding row not found for ID: " + cleanId);
+  }
+  if (matches.length > 1) {
+    throw new Error("More than one onboarding row found for ID: " + cleanId + ". Refusing ambiguous generation.");
+  }
+
+  log_(runId, "INFO", "SINGLE_DOCGEN_MAIN_ROW_FOUND", {
+    nip: normalizeSingleDocumentNip_(getManualNipControl_(matches[0])),
+    onboardingId: cleanId,
+    matchedBy: "onboardingId",
     sheetName: sheetName
   });
   return matches[0];
@@ -219,8 +404,9 @@ function buildSingleDocumentFileRow_(runId, mainRow, onboardingId, templateId, o
     templateId
   );
 
+  const entityKey = normalizeSingleDocumentNip_(getManualNipControl_(mainRow)) || onboardingId || "unknown";
   return {
-    ID: "single-" + normalizeSingleDocumentNip_(getManualNipControl_(mainRow)) + "-" + templateId.slice(0, 8),
+    ID: "single-" + entityKey + "-" + templateId.slice(0, 8),
     Onboarding_ID: onboardingId,
     Template_ID_Reference: templateId,
     File_Name: String(pdfName || "").replace(/\.pdf$/i, ""),
